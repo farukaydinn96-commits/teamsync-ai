@@ -1,10 +1,40 @@
 <!doctype html>
-<html lang="en">
+<html lang="tr">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>frontend</title>
+    <title>TeamSync AI — Workspace Pro</title>
+    <meta
+      name="description"
+      content="Gerçek zamanlı yapay zeka destekli takım çalışma alanı, sprint planlama ve görev yönetimi."
+    />
+    <meta property="og:title" content="TeamSync AI — Workspace Pro" />
+    <meta
+      property="og:description"
+      content="Gerçek zamanlı yapay zeka destekli takım çalışma alanı ve sprint yönetimi."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://teamsync-workspace-three.vercel.app" />
+
+    <!-- Render sunucusu ile erken DNS ve SSL el sıkışması -->
+    <link rel="preconnect" href="https://teamsync-ai-backend.onrender.com" crossorigin />
+    <link rel="dns-prefetch" href="https://teamsync-ai-backend.onrender.com" />
+
+    <!-- İlk yüklemede beyaz ekran parlamasını önler -->
+    <style>
+      html {
+        background-color: #0b0f19;
+      }
+    </style>
+
+    <!-- React paketi inerken backend bağlantısını paralelde uyandırır -->
+    <script>
+      fetch('https://teamsync-ai-backend.onrender.com/api/health', {
+        mode: 'cors',
+        cache: 'no-store',
+      }).catch(function () {});
+    </script>
   </head>
   <body>
     <div id="root"></div>
