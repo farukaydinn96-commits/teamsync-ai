@@ -13,39 +13,68 @@ import { seedInitialData } from './controllers/workspaceController.js';
 
 dotenv.config();
 
+const FENCE = '\x60\x60\x60';
 const app = express();
 const server = http.createServer(app);
 
-app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:5173',
-  credentials: true
-}));
+const allowedOrigins = [
+  process.env.CLIENT_URL,
+  'https://teamsync-workspace-three.vercel.app',
+  'http://localhost:5173',
+  'http://localhost:4173'
+].filter(Boolean);
+
+const corsOriginHandler = (origin, callback) => {
+  if (
+    !origin ||
+    allowedOrigins.includes(origin) ||
+    /^https:\/\/teamsync-[a-z0-9-]+\.vercel\.app$/i.test(origin)
+  ) {
+    return callback(null, true);
+  }
+  return callback(new Error('Not allowed by CORS'));
+};
+
+app.use(
+  cors({
+    origin: corsOriginHandler,
+    credentials: true
+  })
+);
 app.use(express.json());
 
-// Render Keep-Alive (Cron-job) ve Ping ölçümü için Health rotası
+// Render Keep-Alive ve MongoDB bağlantı sıcaklığı kontrolü
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: Date.now() });
+  if (mongoose.connection.readyState === 1 && mongoose.connection.db) {
+    mongoose.connection.db.admin().ping().catch(() => {});
+  }
+  res.json({
+    status: 'ok',
+    db: mongoose.connection.readyState === 1 ? 'connected' : 'warming',
+    timestamp: Date.now()
+  });
 });
 
 app.use('/api', workspaceRoutes);
 
 const io = new Server(server, {
   cors: {
-    origin: process.env.CLIENT_URL || 'http://localhost:5173',
+    origin: corsOriginHandler,
     methods: ['GET', 'POST'],
     credentials: true
   }
 });
 
-mongoose.connect(process.env.MONGO_URI)
+mongoose
+  .connect(process.env.MONGO_URI)
   .then(async () => {
     console.log('MongoDB Baglandi');
     await seedInitialData();
   })
   .catch((err) => console.error(err.message));
 
-const genAI = process.env.GEMINI_API_KEY 
-  ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) 
+const genAI = process.env.GEMINI_API_KEY
+  ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
   : null;
 
 const roomUsers = {};
@@ -69,19 +98,13 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Anlık soket yayını (diğer ekranlar için)
   socket.on('sync_doc_live', ({ room, content }) => {
     socket.to(room).emit('doc_updated', content);
   });
 
-  // 800ms Debounce sonrası MongoDB'ye kalıcı kayıt
   socket.on('save_doc_db', async ({ room, content }) => {
     try {
-      await Document.findOneAndUpdate(
-        { room },
-        { content },
-        { upsert: true }
-      );
+      await Document.findOneAndUpdate({ room }, { content }, { upsert: true });
       socket.emit('doc_saved_ack', { savedAt: new Date().toLocaleTimeString('tr-TR') });
     } catch (error) {
       console.error(error.message);
@@ -92,7 +115,10 @@ io.on('connection', (socket) => {
     try {
       if (data.text.startsWith('/poll ')) {
         const rawPoll = data.text.replace('/poll ', '').trim();
-        const parts = rawPoll.split('|').map((s) => s.trim()).filter(Boolean);
+        const parts = rawPoll
+          .split('|')
+          .map((s) => s.trim())
+          .filter(Boolean);
 
         if (parts.length >= 2) {
           const question = parts[0];
@@ -199,7 +225,9 @@ io.on('connection', (socket) => {
             room: data.room,
             sender: 'TeamSync AI',
             senderId: 'ai-bot',
-            text: `🚀 "${topic}" için ${generatedTasks.length} adet sprint görevi otomatik oluşturuldu ve Kanban panosuna eklendi:\n` + generatedTasks.map((t) => `• ${t}`).join('\n'),
+            text:
+              `🚀 "${topic}" için ${generatedTasks.length} adet sprint görevi otomatik oluşturuldu ve Kanban panosuna eklendi:\n` +
+              generatedTasks.map((t) => `• ${t}`).join('\n'),
             isAi: true
           });
 
@@ -210,7 +238,7 @@ io.on('connection', (socket) => {
 
       if (data.text.startsWith('/ai ')) {
         const prompt = data.text.replace('/ai ', '').trim();
-        let aiReplyText = `🤖 [AI Analizi]: "${prompt}" konusu için önerilen teknik yaklaşım:\n\`\`\`javascript\n// Örnek Mimari Kurgu\nasync function executeWorkflow(payload) {\n  return { status: "optimized", target: "${prompt}" };\n}\n\`\`\`\nGerçek LLM yanıtları için .env dosyasına GEMINI_API_KEY ekleyebilirsiniz.`;
+        let aiReplyText = `🤖 [AI Analizi]: "${prompt}" konusu için önerilen teknik yaklaşım:\n${FENCE}javascript\nasync function executeWorkflow(payload) {\n  return { status: "optimized", target: "${prompt}" };\n}\n${FENCE}`;
 
         if (genAI && process.env.GEMINI_API_KEY !== 'buraya_kendi_gemini_api_keyini_yapistir') {
           try {
