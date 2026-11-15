@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "nodemon server.js",
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test tests/workspace.test.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
@@ -16,9 +17,13 @@
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.4.1",
-    "socket.io": "^4.7.5"
+    "socket.io": "^4.7.5",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "nodemon": "^3.1.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }

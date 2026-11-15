@@ -2,14 +2,30 @@ import { useEffect, useState, useRef } from 'react';
 import socket from './services/socket';
 import { BACKEND_URL, CHANNELS } from './constants/workspaceConfig';
 import { INITIAL_WORKSPACE_DATA } from './constants/initialWorkspaceData';
+import { TRANSLATIONS } from './constants/i18n';
 import Sidebar from './components/Sidebar';
 import ChatView from './components/ChatView';
 import KanbanBoard from './components/KanbanBoard';
 import { DocsView, AnalyticsView } from './components/DocsAndAnalytics';
 import CommandModal from './components/CommandModal';
 
-const CACHE_KEY = 'teamsync_workspace_cache_v6';
-const FENCE = '\x60\x60\x60';
+const SESSION_ID_KEY = 'teamsync_session_id_v2';
+const getOrCreateSessionId = () => {
+  try {
+    let sid = localStorage.getItem(SESSION_ID_KEY);
+    if (!sid || !/^sess_[a-z0-9]{5,12}$/i.test(sid)) {
+      sid = 'sess_' + Math.random().toString(36).slice(2, 9);
+      localStorage.setItem(SESSION_ID_KEY, sid);
+    }
+    return sid;
+  } catch {
+    return 'sess_demo01';
+  }
+};
+
+const SESSION_ID = getOrCreateSessionId();
+const CACHE_KEY = 'teamsync_workspace_cache_v8_' + SESSION_ID;
+const FENCE = '```';
 const TEAM_ROSTER = ['Faruk_Lead', 'Mert_Backend', 'Ece_Frontend', 'Zeynep_QA'];
 const PLAN_PRIORITIES = ['high', 'medium', 'medium', 'low'];
 
@@ -49,14 +65,18 @@ const loadInitialStore = () => {
 };
 
 function App() {
+  const [lang, setLang] = useState('EN');
   const [currentRoom, setCurrentRoom] = useState('general');
   const [activeTab, setActiveTab] = useState('chat');
   const [workspaceStore, setWorkspaceStore] = useState(loadInitialStore);
   const [onlineUsers, setOnlineUsers] = useState([]);
   const [docSaveStatus, setDocSaveStatus] = useState('saved');
   const [isConnected, setIsConnected] = useState(socket.connected);
+  const [isServerWarming, setIsServerWarming] = useState(false);
   const [pingMs, setPingMs] = useState(28);
   const [toastMessage, setToastMessage] = useState(null);
+  const [isToolsOpen, setIsToolsOpen] = useState(false);
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
 
   const [input, setInput] = useState('');
   const [replyingTo, setReplyingTo] = useState(null);
@@ -66,7 +86,6 @@ function App() {
   const [newTaskPriority, setNewTaskPriority] = useState('medium');
   const [isCommandOpen, setIsCommandOpen] = useState(false);
   const [showPinnedOnly, setShowPinnedOnly] = useState(false);
-  const [lang, setLang] = useState("EN");
   const [isListening, setIsListening] = useState(false);
 
   const [focusSeconds, setFocusSeconds] = useState(25 * 60);
@@ -79,7 +98,16 @@ function App() {
       return 'Faruk_Lead';
     }
   });
+  const [jwtToken, setJwtToken] = useState(() => {
+    try {
+      return localStorage.getItem('teamsync_jwt') || '';
+    } catch {
+      return '';
+    }
+  });
 
+  const t = TRANSLATIONS[lang] || TRANSLATIONS.EN;
+  const scopedRoom = `${SESSION_ID}:${currentRoom}`;
   const currentRoomRef = useRef(currentRoom);
   const docDebounceRef = useRef(null);
   const toastTimerRef = useRef(null);
@@ -95,10 +123,11 @@ function App() {
   const sharedDoc = currentRoomData.doc;
 
   const updateRoom = (room, updater) => {
+    const cleanRoom = room.includes(':') ? room.split(':')[1] : room;
     setWorkspaceStore((prev) => {
-      const existing = prev[room] || INITIAL_WORKSPACE_DATA[room] || INITIAL_WORKSPACE_DATA.general;
+      const existing = prev[cleanRoom] || INITIAL_WORKSPACE_DATA[cleanRoom] || INITIAL_WORKSPACE_DATA.general;
       const updated = updater(existing);
-      return { ...prev, [room]: updated };
+      return { ...prev, [cleanRoom]: updated };
     });
   };
 
@@ -118,13 +147,34 @@ function App() {
     try {
       localStorage.setItem('teamsync_user', username);
     } catch {}
+
+    fetch(`${BACKEND_URL}/api/auth/demo-token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username })
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data?.token) {
+          setJwtToken(data.token);
+          socket.auth = { token: data.token, username };
+          try {
+            localStorage.setItem('teamsync_jwt', data.token);
+          } catch {}
+        }
+      })
+      .catch(() => {});
   }, [username]);
 
   useEffect(() => {
     const measureWarmPing = async () => {
+      const slowTimer = setTimeout(() => {
+        if (!socket.connected) setIsServerWarming(true);
+      }, 1500);
       try {
         const t0 = performance.now();
         const res = await fetch(`${BACKEND_URL}/api/health`, { cache: 'no-store' });
+        clearTimeout(slowTimer);
         if (!res.ok) return;
         let elapsed = Math.round(performance.now() - t0);
         if (elapsed > 800) {
@@ -134,17 +184,21 @@ function App() {
         }
         setPingMs(Math.max(12, Math.min(elapsed, 450)));
         setIsConnected(true);
+        setIsServerWarming(false);
       } catch {
+        clearTimeout(slowTimer);
         setIsConnected(socket.connected);
       }
     };
 
     const onConnect = () => {
       setIsConnected(true);
+      setIsServerWarming(false);
       socket.emit('join_room', {
-        room: currentRoomRef.current,
+        room: `${SESSION_ID}:${currentRoomRef.current}`,
         username,
-        isFocusing: isFocusActive
+        isFocusing: isFocusActive,
+        token: jwtToken
       });
       measureWarmPing();
     };
@@ -162,7 +216,7 @@ function App() {
       socket.off('disconnect', onDisconnect);
       clearInterval(interval);
     };
-  }, [username, isFocusActive]);
+  }, [username, isFocusActive, jwtToken]);
 
   useEffect(() => {
     let timer = null;
@@ -170,11 +224,11 @@ function App() {
       timer = setInterval(() => setFocusSeconds((prev) => prev - 1), 1000);
     } else if (focusSeconds === 0) {
       setIsFocusActive(false);
-      socket.emit('toggle_focus', { room: currentRoom, username, isFocusing: false });
+      socket.emit('toggle_focus', { room: scopedRoom, username, isFocusing: false });
       showToast('🎯 Deep Work session completed!');
     }
     return () => clearInterval(timer);
-  }, [isFocusActive, focusSeconds, currentRoom, username]);
+  }, [isFocusActive, focusSeconds, scopedRoom, username]);
 
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -184,6 +238,8 @@ function App() {
       }
       if (e.key === 'Escape') {
         setIsCommandOpen(false);
+        setIsToolsOpen(false);
+        setIsMobileSidebarOpen(false);
         setReplyingTo(null);
       }
     };
@@ -192,57 +248,13 @@ function App() {
   }, []);
 
   useEffect(() => {
-    socket.emit('join_room', { room: currentRoom, username, isFocusing: isFocusActive });
-  }, [currentRoom, username, isFocusActive]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const targetRoom = currentRoom;
-
-    Promise.all([
-      fetch(`${BACKEND_URL}/api/messages/${targetRoom}`).then((r) => (r.ok ? r.json() : null)),
-      fetch(`${BACKEND_URL}/api/tasks/${targetRoom}`).then((r) => (r.ok ? r.json() : null)),
-      fetch(`${BACKEND_URL}/api/docs/${targetRoom}`).then((r) => (r.ok ? r.json() : null))
-    ])
-      .then(([msgsData, tasksData, docData]) => {
-        if (cancelled) return;
-
-        if (Array.isArray(tasksData) && tasksData.length > 12) {
-          const doneServer = tasksData.filter((t) => t.status === 'done').length;
-          if (doneServer < 3) {
-            fetch(`${BACKEND_URL}/api/reset`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ room: targetRoom })
-            }).catch(() => {});
-            return;
-          }
-        }
-
-        updateRoom(targetRoom, (prev) => {
-          const nextMessages =
-            Array.isArray(msgsData) && msgsData.length >= 3 ? msgsData : prev.messages;
-          const nextTasks =
-            Array.isArray(tasksData) &&
-            tasksData.length >= 3 &&
-            tasksData.length <= 12 &&
-            tasksData.filter((t) => t.status === 'done').length >= 1
-              ? tasksData
-              : prev.tasks;
-          const nextDoc =
-            docData && typeof docData.content === 'string' && docData.content.trim().length > 0
-              ? docData.content
-              : prev.doc;
-
-          return { messages: nextMessages, tasks: nextTasks, doc: nextDoc };
-        });
-      })
-      .catch(() => {});
-
-    return () => {
-      cancelled = true;
-    };
-  }, [currentRoom]);
+    socket.emit('join_room', {
+      room: scopedRoom,
+      username,
+      isFocusing: isFocusActive,
+      token: jwtToken
+    });
+  }, [scopedRoom, username, isFocusActive, jwtToken]);
 
   useEffect(() => {
     const handleReceiveMessage = (serverMsg) => {
@@ -289,9 +301,9 @@ function App() {
       updateRoom(targetRoom, (prev) => {
         if (
           prev.tasks.some(
-            (t) =>
-              t._id === newTask._id ||
-              t.title.trim().toLowerCase() === newTask.title.trim().toLowerCase()
+            (tItem) =>
+              tItem._id === newTask._id ||
+              tItem.title.trim().toLowerCase() === newTask.title.trim().toLowerCase()
           )
         ) {
           return prev;
@@ -304,14 +316,14 @@ function App() {
       const targetRoom = updatedTask.room || currentRoomRef.current;
       updateRoom(targetRoom, (prev) => ({
         ...prev,
-        tasks: prev.tasks.map((t) => (t._id === updatedTask._id ? updatedTask : t))
+        tasks: prev.tasks.map((tItem) => (tItem._id === updatedTask._id ? updatedTask : tItem))
       }));
     };
 
     const handleTaskDeleted = (taskId) => {
       updateRoom(currentRoomRef.current, (prev) => ({
         ...prev,
-        tasks: prev.tasks.filter((t) => t._id !== taskId)
+        tasks: prev.tasks.filter((tItem) => tItem._id !== taskId)
       }));
     };
 
@@ -321,12 +333,6 @@ function App() {
 
     const handleDocSavedAck = () => setDocSaveStatus('saved');
 
-    const handleWorkspaceReset = (payload) => {
-      if (!payload?.room) return;
-      setWorkspaceStore(INITIAL_WORKSPACE_DATA);
-      showToast('🔄 Workspace reset to clean 63% Sprint seed state');
-    };
-
     socket.on('receive_message', handleReceiveMessage);
     socket.on('message_updated', handleMessageUpdated);
     socket.on('task_created', handleTaskCreated);
@@ -335,7 +341,6 @@ function App() {
     socket.on('room_users', setOnlineUsers);
     socket.on('doc_updated', handleDocUpdated);
     socket.on('doc_saved_ack', handleDocSavedAck);
-    socket.on('workspace_reset', handleWorkspaceReset);
 
     return () => {
       socket.off('receive_message', handleReceiveMessage);
@@ -346,22 +351,20 @@ function App() {
       socket.off('room_users', setOnlineUsers);
       socket.off('doc_updated', handleDocUpdated);
       socket.off('doc_saved_ack', handleDocSavedAck);
-      socket.off('workspace_reset', handleWorkspaceReset);
     };
   }, []);
 
   const handleDocChange = (e) => {
     const val = e.target.value;
-    const room = currentRoom;
-    updateRoom(room, (prev) => ({ ...prev, doc: val }));
+    updateRoom(currentRoom, (prev) => ({ ...prev, doc: val }));
     setDocSaveStatus('saving');
 
-    socket.emit('sync_doc_live', { room, content: val });
+    socket.emit('sync_doc_live', { room: scopedRoom, content: val });
 
     if (docDebounceRef.current) clearTimeout(docDebounceRef.current);
     docDebounceRef.current = setTimeout(() => {
       if (socket.connected) {
-        socket.emit('save_doc_db', { room, content: val });
+        socket.emit('save_doc_db', { room: scopedRoom, content: val });
       } else {
         setDocSaveStatus('saved');
       }
@@ -382,33 +385,31 @@ function App() {
   const handleResetDemoWorkspace = () => {
     localStorage.removeItem(CACHE_KEY);
     setWorkspaceStore(INITIAL_WORKSPACE_DATA);
-    socket.emit('reset_workspace', { room: currentRoom });
-    fetch(`${BACKEND_URL}/api/reset`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ room: currentRoom })
-    }).catch(() => {});
-    showToast('🔄 Demo workspace restored to clean 63% Sprint state!');
+    setIsToolsOpen(false);
+    showToast('🔄 Session sandbox restored to clean 63% Sprint state!');
   };
 
   const handleSimulateTeammate = () => {
     const room = currentRoom;
+    setIsToolsOpen(false);
     showToast('🤖 Simulating live teammate Socket.io activity...');
 
     setTimeout(() => {
       const simMsg = {
         _id: makeLocalId('local-msg'),
         room,
-        sender: 'Ece_Frontend',
+        sender: 'Ece_Frontend (Sim)',
         senderId: 'sim-ece',
-        text: '⚡ [Live Socket Event]: Just pushed the responsive Kanban card PR and moving my task to Done!',
+        text: '⚡ [Simulated Teammate Socket Event]: Just pushed the responsive Kanban card PR and moved my task to Done!',
         isAi: false,
         isPinned: false,
         reactions: { '🚀': 1 }
       };
       updateRoom(room, (prev) => {
-        const nextTasks = prev.tasks.map((t, idx) =>
-          idx === prev.tasks.length - 1 && t.status !== 'done' ? { ...t, status: 'done' } : t
+        const nextTasks = prev.tasks.map((taskItem, idx) =>
+          idx === prev.tasks.length - 1 && taskItem.status !== 'done'
+            ? { ...taskItem, status: 'done' }
+            : taskItem
         );
         return {
           ...prev,
@@ -416,7 +417,7 @@ function App() {
           tasks: nextTasks
         };
       });
-      showToast('✓ Ece_Frontend sent a message & updated Kanban board!');
+      showToast('✓ Ece_Frontend (Sim) sent a message & updated Kanban board!');
     }, 450);
   };
 
@@ -431,13 +432,13 @@ function App() {
         room,
         sender: 'TeamSync AI',
         senderId: 'ai-bot',
-        text: `🔒 [RBAC Policy Guard]: Role "${username}" does not have permission to run automated sprint planning (/plan). Switch to "👑 Tech Lead" in the bottom-left role switcher to execute this command.`,
+        text: `🔒 [HTTP 403 Forbidden — JWT RBAC Guard]: Signed JWT token for "${username}" carries role "Developer". Only "Tech Lead" claim is authorized to execute /plan. Switch to "👑 Tech Lead" in the bottom-left switcher.`,
         isAi: true,
         isPinned: false,
         reactions: {}
       };
       updateRoom(room, (prev) => ({ ...prev, messages: [...prev.messages, rbacMsg] }));
-      showToast('🔒 RBAC: Switch to Tech Lead role to run /plan');
+      showToast('🔒 403 Forbidden: Switch to Tech Lead JWT role to run /plan');
       return;
     }
 
@@ -468,10 +469,11 @@ function App() {
         };
         updateRoom(room, (prev) => ({ ...prev, messages: [...prev.messages, optimisticPoll] }));
         socket.emit('send_message', {
-          room,
+          room: scopedRoom,
           sender: username,
           senderId: socket.id || 'local-user',
-          text: trimmed
+          text: trimmed,
+          token: jwtToken
         });
         return;
       }
@@ -500,7 +502,7 @@ function App() {
           `${topic} - Automated Integration Tests`
         ];
 
-        const existingSet = new Set(tasks.map((t) => t.title.trim().toLowerCase()));
+        const existingSet = new Set(tasks.map((tItem) => tItem.title.trim().toLowerCase()));
         const uniqueTitles = candidateTitles.filter(
           (title) => !existingSet.has(title.trim().toLowerCase())
         );
@@ -511,7 +513,7 @@ function App() {
             room,
             sender: 'TeamSync AI',
             senderId: 'ai-bot',
-            text: `ℹ️ [Idempotency Guard]: Sprint tasks for "${topic}" already exist on the Kanban board. Duplicate task creation was prevented.`,
+            text: `ℹ️ [Duplicate-Preventing Guard]: Sprint tasks for "${topic}" already exist on the Kanban board.`,
             isAi: true,
             isPinned: false,
             reactions: {}
@@ -540,11 +542,11 @@ function App() {
           sender: 'TeamSync AI',
           senderId: 'ai-bot',
           text:
-            `🚀 [AI Sprint Planner]: Added ${uniqueTitles.length} deduplicated tasks for "${topic}" with balanced priorities:\n` +
+            `🚀 [🛡️ Deterministic Fallback Template]: Added ${uniqueTitles.length} sprint tasks for "${topic}":\n` +
             uniqueTitles
               .map(
-                (t, i) =>
-                  `• [${PLAN_PRIORITIES[i % PLAN_PRIORITIES.length].toUpperCase()}] ${t} → @${TEAM_ROSTER[i % TEAM_ROSTER.length]}`
+                (tTitle, i) =>
+                  `• [${PLAN_PRIORITIES[i % PLAN_PRIORITIES.length].toUpperCase()}] ${tTitle} → @${TEAM_ROSTER[i % TEAM_ROSTER.length]}`
               )
               .join('\n'),
           isAi: true,
@@ -569,8 +571,10 @@ function App() {
         sender: 'TeamSync AI',
         senderId: 'ai-bot',
         text:
-          `🤖 [🛡️ RBAC Security Pattern — "${prompt}"]:\n` +
-          `${FENCE}javascript\nexport const workspaceGuard = (allowedRoles = ['Tech Lead', 'Admin']) => {\n  return (req, res, next) => {\n    const userRole = req.headers['x-workspace-role'];\n    const token = req.headers.authorization?.split(' ')[1];\n    if (!token || !allowedRoles.includes(userRole)) {\n      return res.status(403).json({\n        error: 'Forbidden: Insufficient RBAC role permissions'\n      });\n    }\n    return next();\n  };\n};\n${FENCE}`,
+          `🤖 [🛡️ Deterministic Fallback Template — "${prompt}"]:\n` +
+          FENCE +
+          `javascript\nimport jwt from 'jsonwebtoken';\n\nexport const workspaceGuard = (allowedRoles = ['Tech Lead']) => (req, res, next) => {\n  try {\n    const token = req.headers.authorization?.split(' ')[1];\n    const { username, role } = jwt.verify(token, process.env.JWT_SECRET);\n    if (!role || !allowedRoles.includes(role)) {\n      return res.status(403).json({ message: 'RBAC: Insufficient permissions' });\n    }\n    req.user = { username, role };\n    return next();\n  } catch {\n    return res.status(401).json({ message: 'Invalid or missing token' });\n  }\n};\n` +
+          FENCE,
         isAi: true,
         isPinned: false,
         reactions: {}
@@ -614,11 +618,12 @@ function App() {
     }
 
     socket.emit('send_message', {
-      room,
+      room: scopedRoom,
       sender: username,
       senderId: socket.id || 'local-user',
       text: trimmed,
-      replyTo: optimisticMsg.replyTo
+      replyTo: optimisticMsg.replyTo,
+      token: jwtToken
     });
   };
 
@@ -637,7 +642,7 @@ function App() {
       return;
     }
     const recognition = new SpeechRecognition();
-    recognition.lang = 'en-US';
+    recognition.lang = lang === 'EN' ? 'en-US' : 'tr-TR';
     recognition.onstart = () => setIsListening(true);
     recognition.onend = () => setIsListening(false);
     recognition.onerror = () => setIsListening(false);
@@ -650,6 +655,7 @@ function App() {
 
   const triggerQuickCommand = (commandText) => {
     setActiveTab('chat');
+    setIsMobileSidebarOpen(false);
     dispatchMessageOrCommand(commandText, null);
   };
 
@@ -657,7 +663,7 @@ function App() {
     e.preventDefault();
     const title = newTaskTitle.trim();
     if (!title) return;
-    if (tasks.some((t) => t.title.trim().toLowerCase() === title.toLowerCase())) {
+    if (tasks.some((tItem) => tItem.title.trim().toLowerCase() === title.toLowerCase())) {
       showToast('ℹ️ Task with this title already exists.');
       return;
     }
@@ -675,7 +681,7 @@ function App() {
       tasks: [optimisticTask, ...prev.tasks]
     }));
     socket.emit('create_task', {
-      room: currentRoom,
+      room: scopedRoom,
       title,
       priority: newTaskPriority,
       assignee: username,
@@ -748,37 +754,38 @@ function App() {
   const handleStatusChange = (taskId, status) => {
     updateRoom(currentRoom, (prev) => ({
       ...prev,
-      tasks: prev.tasks.map((t) => (t._id === taskId ? { ...t, status } : t))
+      tasks: prev.tasks.map((tItem) => (tItem._id === taskId ? { ...tItem, status } : tItem))
     }));
     showToast(`🔄 Task moved to "${status}"`);
   };
 
   const handleDeleteTask = (taskId) => {
-    const target = tasks.find((t) => t._id === taskId);
+    const target = tasks.find((tItem) => tItem._id === taskId);
     if (target?.priority === 'high' && username !== 'Faruk_Lead') {
-      showToast('🔒 RBAC: Only Tech Lead can delete High-priority tasks');
+      showToast('🔒 403 Forbidden: Only Tech Lead JWT role can delete High-priority tasks');
       return;
     }
     updateRoom(currentRoom, (prev) => ({
       ...prev,
-      tasks: prev.tasks.filter((t) => t._id !== taskId)
+      tasks: prev.tasks.filter((tItem) => tItem._id !== taskId)
     }));
+    socket.emit('delete_task', { room: scopedRoom, taskId, token: jwtToken });
     showToast('🗑️ Task deleted');
   };
 
   const handleAddSubtask = (taskId, title) => {
     updateRoom(currentRoom, (prev) => ({
       ...prev,
-      tasks: prev.tasks.map((t) =>
-        t._id === taskId
+      tasks: prev.tasks.map((tItem) =>
+        tItem._id === taskId
           ? {
-              ...t,
+              ...tItem,
               subtasks: [
-                ...(t.subtasks || []),
+                ...(tItem.subtasks || []),
                 { _id: makeLocalId('st'), title, completed: false }
               ]
             }
-          : t
+          : tItem
       )
     }));
   };
@@ -786,35 +793,35 @@ function App() {
   const handleToggleSubtask = (taskId, subtaskId) => {
     updateRoom(currentRoom, (prev) => ({
       ...prev,
-      tasks: prev.tasks.map((t) =>
-        t._id === taskId
+      tasks: prev.tasks.map((tItem) =>
+        tItem._id === taskId
           ? {
-              ...t,
-              subtasks: (t.subtasks || []).map((st) =>
+              ...tItem,
+              subtasks: (tItem.subtasks || []).map((st) =>
                 st._id === subtaskId ? { ...st, completed: !st.completed } : st
               )
             }
-          : t
+          : tItem
       )
     }));
   };
 
   const exportSprintReport = (format = 'md') => {
-    const doneTasks = tasks.filter((t) => t.status === 'done');
-    const inProgressTasks = tasks.filter((t) => t.status === 'in-progress');
-    const todoTasks = tasks.filter((t) => t.status === 'todo');
+    const doneTasks = tasks.filter((tItem) => tItem.status === 'done');
+    const inProgressTasks = tasks.filter((tItem) => tItem.status === 'in-progress');
+    const todoTasks = tasks.filter((tItem) => tItem.status === 'todo');
 
     let content = '';
     const filename = `teamsync-${currentRoom}-report.${format}`;
 
     if (format === 'json') {
-      content = JSON.stringify({ room: currentRoom, tasks, messagesCount: messages.length }, null, 2);
+      content = JSON.stringify({ room: currentRoom, sessionId: SESSION_ID, tasks, messagesCount: messages.length }, null, 2);
     } else {
       content = `# TeamSync AI - #${currentRoom} Sprint Report\n\n`;
       content += `- **Total Tasks:** ${tasks.length} | **Done:** ${doneTasks.length} | **In Progress:** ${inProgressTasks.length} | **To Do:** ${todoTasks.length}\n\n`;
       content +=
         `## Completed Tasks\n` +
-        (doneTasks.map((t) => `- [x] ${t.title} (${t.assignee})`).join('\n') || 'None yet.') +
+        (doneTasks.map((tItem) => `- [x] ${tItem.title} (${tItem.assignee})`).join('\n') || 'None yet.') +
         `\n\n`;
       content += `## Shared Channel Document\n${sharedDoc}\n`;
     }
@@ -837,12 +844,12 @@ function App() {
     return showPinnedOnly ? matchesSearch && m.isPinned : matchesSearch;
   });
 
-  const filteredTasks = tasks.filter((t) => {
-    const matchesSearch = t.title.toLowerCase().includes(searchQuery.toLowerCase());
-    return priorityFilter === 'all' ? matchesSearch : matchesSearch && t.priority === priorityFilter;
+  const filteredTasks = tasks.filter((tItem) => {
+    const matchesSearch = tItem.title.toLowerCase().includes(searchQuery.toLowerCase());
+    return priorityFilter === 'all' ? matchesSearch : matchesSearch && tItem.priority === priorityFilter;
   });
 
-  const doneCount = tasks.filter((t) => t.status === 'done').length;
+  const doneCount = tasks.filter((tItem) => tItem.status === 'done').length;
   const progressPercent = tasks.length > 0 ? Math.round((doneCount / tasks.length) * 100) : 0;
   const pinnedCount = messages.filter((m) => m.isPinned).length;
 
@@ -862,59 +869,119 @@ function App() {
         triggerQuickCommand={triggerQuickCommand}
       />
 
-      <Sidebar
-        currentRoom={currentRoom}
-        setCurrentRoom={(room) => {
-          setCurrentRoom(room);
-          showToast(lang === "EN" ? `Switched to #${room}` : `#${room} kanalına geçildi`);
-        }}
-        progressPercent={progressPercent}
-        doneCount={doneCount}
-        totalTasks={tasks.length}
-        focusSeconds={focusSeconds}
-        isFocusActive={isFocusActive}
-        toggleFocusTimer={() => {
-          const next = !isFocusActive;
-          setIsFocusActive(next);
-          socket.emit("toggle_focus", { room: currentRoom, username, isFocusing: next });
-        }}
-        resetFocusTimer={() => {
-          setIsFocusActive(false);
-          setFocusSeconds(25 * 60);
-          socket.emit("toggle_focus", { room: currentRoom, username, isFocusing: false });
-        }}
-        triggerQuickCommand={triggerQuickCommand}
-        onlineUsers={onlineUsers}
-        username={username}
-        setUsername={(name) => {
-          setUsername(name);
-          showToast(lang === "EN" ? `👤 Active RBAC Profile: ${name}` : `👤 Aktif Profil: ${name}`);
-        }}
-        onOpenCommand={() => setIsCommandOpen(true)}
-      />
+      {isMobileSidebarOpen && (
+        <div
+          onClick={() => setIsMobileSidebarOpen(false)}
+          className="fixed inset-0 bg-black/60 z-40 lg:hidden flex"
+        >
+          <div onClick={(e) => e.stopPropagation()} className="h-full">
+            <Sidebar
+              lang={lang}
+              currentRoom={currentRoom}
+              setCurrentRoom={(room) => {
+                setCurrentRoom(room);
+                setIsMobileSidebarOpen(false);
+                showToast(`#${room}`);
+              }}
+              progressPercent={progressPercent}
+              doneCount={doneCount}
+              totalTasks={tasks.length}
+              focusSeconds={focusSeconds}
+              isFocusActive={isFocusActive}
+              toggleFocusTimer={() => {
+                const next = !isFocusActive;
+                setIsFocusActive(next);
+                socket.emit("toggle_focus", { room: scopedRoom, username, isFocusing: next });
+              }}
+              resetFocusTimer={() => {
+                setIsFocusActive(false);
+                setFocusSeconds(25 * 60);
+                socket.emit("toggle_focus", { room: scopedRoom, username, isFocusing: false });
+              }}
+              triggerQuickCommand={triggerQuickCommand}
+              onlineUsers={onlineUsers}
+              username={username}
+              setUsername={(name) => {
+                setUsername(name);
+                const roleName = name === "Faruk_Lead" ? "Tech Lead" : "Developer";
+                showToast(`🔑 Signed JWT Issued: ${name} (${roleName})`);
+              }}
+              onOpenCommand={() => setIsCommandOpen(true)}
+            />
+          </div>
+        </div>
+      )}
 
-      <main className="flex-1 flex flex-col bg-slate-900/60">
-        <header className="h-16 border-b border-slate-800/80 px-6 flex items-center justify-between bg-slate-950/60 backdrop-blur">
-          <div className="flex items-center gap-4">
-            <div>
-              <div className="flex items-center gap-1.5">
-                <span className="text-lg font-bold text-blue-400">#</span>
-                <h2 className="font-semibold text-base">{activeChannel?.name}</h2>
-              </div>
-              <p className="text-[11px] text-slate-400">{activeChannel?.desc}</p>
+      <div className="hidden lg:flex h-full">
+        <Sidebar
+          lang={lang}
+          currentRoom={currentRoom}
+          setCurrentRoom={(room) => {
+            setCurrentRoom(room);
+            showToast(`#${room}`);
+          }}
+          progressPercent={progressPercent}
+          doneCount={doneCount}
+          totalTasks={tasks.length}
+          focusSeconds={focusSeconds}
+          isFocusActive={isFocusActive}
+          toggleFocusTimer={() => {
+            const next = !isFocusActive;
+            setIsFocusActive(next);
+            socket.emit("toggle_focus", { room: scopedRoom, username, isFocusing: next });
+          }}
+          resetFocusTimer={() => {
+            setIsFocusActive(false);
+            setFocusSeconds(25 * 60);
+            socket.emit("toggle_focus", { room: scopedRoom, username, isFocusing: false });
+          }}
+          triggerQuickCommand={triggerQuickCommand}
+          onlineUsers={onlineUsers}
+          username={username}
+          setUsername={(name) => {
+            setUsername(name);
+            const roleName = name === "Faruk_Lead" ? "Tech Lead" : "Developer";
+            showToast(`🔑 Signed JWT Issued: ${name} (${roleName})`);
+          }}
+          onOpenCommand={() => setIsCommandOpen(true)}
+        />
+      </div>
+
+      <main className="flex-1 min-w-0 flex flex-col bg-slate-900/60">
+        {isServerWarming && !isConnected && (
+          <div className="bg-amber-500/15 border-b border-amber-500/30 px-4 py-1.5 text-[11px] text-amber-200 flex items-center justify-between">
+            <span>⚡ Render free-tier container is waking up (~20s) — workspace is running instantaneously via isolated session cache.</span>
+            <span className="font-mono">Session: {SESSION_ID}</span>
+          </div>
+        )}
+
+        <header className="h-14 border-b border-slate-800/80 px-4 flex items-center justify-between gap-2 bg-slate-950/60 backdrop-blur shrink-0">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <button
+              type="button"
+              aria-label="Toggle navigation drawer"
+              onClick={() => setIsMobileSidebarOpen((v) => !v)}
+              className="lg:hidden px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 text-xs cursor-pointer"
+            >
+              ☰
+            </button>
+
+            <div className="hidden xl:flex items-center gap-1 shrink-0">
+              <span className="text-base font-bold text-blue-400">#</span>
+              <h2 className="font-semibold text-sm truncate">{activeChannel?.name}</h2>
             </div>
 
-            <div className="flex bg-slate-900 p-1 rounded-xl border border-slate-800">
+            <div className="flex bg-slate-900 p-1 rounded-xl border border-slate-800 shrink-0 overflow-x-auto">
               {[
-                { id: "chat", label: lang === "EN" ? `💬 Chat (${messages.length})` : `💬 Sohbet (${messages.length})` },
-                { id: "board", label: `📋 Kanban (${tasks.length})` },
-                { id: "docs", label: lang === "EN" ? "📝 Docs & Code" : "📝 Doküman & Kod" },
-                { id: "analytics", label: lang === "EN" ? "📊 Analytics" : "📊 Analitik" }
+                { id: "chat", label: `💬 ${t.chatTab} (${messages.length})` },
+                { id: "board", label: `📋 ${t.kanbanTab} (${tasks.length})` },
+                { id: "docs", label: `📝 ${t.docsTab}` },
+                { id: "analytics", label: `📊 ${t.analyticsTab}` }
               ].map((tab) => (
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
+                  className={`px-2.5 py-1 rounded-lg text-xs font-medium whitespace-nowrap transition cursor-pointer ${
                     activeTab === tab.id ? "bg-blue-600 text-white shadow" : "text-slate-400 hover:text-slate-200"
                   }`}
                 >
@@ -924,62 +991,74 @@ function App() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={handleSimulateTeammate}
-              className="text-xs px-3 py-1.5 rounded-xl border border-indigo-500/40 bg-indigo-950/40 hover:bg-indigo-900/50 text-indigo-200 font-medium cursor-pointer transition"
-              title="Simulate a teammate sending a message and moving a Kanban task via Socket.io"
-            >
-              {lang === "EN" ? "🤖 Simulate Teammate" : "🤖 Ekip Simülasyonu"}
-            </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <input
+              type="text"
+              aria-label="Search messages and tasks"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder={t.searchPlaceholder}
+              className="hidden md:block bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1 text-xs text-white placeholder-slate-500 outline-none focus:border-blue-500 w-32"
+            />
+
+            <div className="text-[11px] px-2.5 py-1 rounded-full border flex items-center gap-1.5 whitespace-nowrap bg-emerald-500/10 border-emerald-500/30 text-emerald-300">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+              {isConnected ? `${t.live} (${pingMs}ms)` : t.liveWorkspace}
+            </div>
 
             <button
               type="button"
-              onClick={handleResetDemoWorkspace}
-              className="text-xs px-3 py-1.5 rounded-xl border border-slate-800 bg-slate-900 hover:bg-slate-800 text-slate-300 font-medium cursor-pointer transition"
-              title="Reset workspace to clean 63% seed state"
-            >
-              {lang === "EN" ? "🔄 Reset Demo" : "🔄 Sıfırla"}
-            </button>
-
-            <button
-              type="button"
+              aria-label="Switch interface language"
               onClick={() => setLang((l) => (l === "EN" ? "TR" : "EN"))}
-              className="text-xs px-2.5 py-1.5 rounded-xl border border-slate-800 bg-slate-900 hover:bg-slate-800 text-blue-300 font-semibold cursor-pointer transition"
-              title="Switch Interface Language (EN / TR)"
+              className="text-xs px-2.5 py-1 rounded-xl border border-slate-800 bg-slate-900 hover:bg-slate-800 text-blue-300 font-semibold whitespace-nowrap cursor-pointer transition"
             >
               🌐 {lang}
             </button>
 
-            <div className="text-[11px] px-2.5 py-1 rounded-full border flex items-center gap-1.5 bg-emerald-500/10 border-emerald-500/30 text-emerald-300">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-              {isConnected
-                ? `${lang === "EN" ? "Live" : "Canlı"} (${pingMs}ms)`
-                : lang === "EN"
-                ? "Live Workspace"
-                : "Canlı Alan"}
-            </div>
-
-            {activeTab === "chat" && (
+            <div className="relative">
               <button
-                onClick={() => setShowPinnedOnly(!showPinnedOnly)}
-                className={`text-xs px-2.5 py-1.5 rounded-xl border transition cursor-pointer ${
-                  showPinnedOnly
-                    ? "bg-amber-500/20 border-amber-500/40 text-amber-300"
-                    : "bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200"
-                }`}
+                type="button"
+                aria-label="Open Demo Tools Menu"
+                onClick={() => setIsToolsOpen((v) => !v)}
+                className="text-xs px-3 py-1 rounded-xl border border-indigo-500/40 bg-indigo-950/50 hover:bg-indigo-900/60 text-indigo-200 font-medium whitespace-nowrap cursor-pointer transition flex items-center gap-1"
               >
-                📌 ({pinnedCount})
+                ⚡ {t.demoTools} ▾
               </button>
-            )}
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder={lang === "EN" ? "Search..." : "Ara..."}
-              className="bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white placeholder-slate-500 outline-none focus:border-blue-500 w-28"
-            />
+
+              {isToolsOpen && (
+                <div className="absolute right-0 mt-2 w-60 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl p-1.5 z-50 space-y-1">
+                  <button
+                    type="button"
+                    onClick={handleSimulateTeammate}
+                    className="w-full text-left px-3 py-2 rounded-lg text-xs text-indigo-200 hover:bg-slate-800 flex items-center justify-between cursor-pointer"
+                  >
+                    <span>🤖 {t.simulateTeammate}</span>
+                    <span className="text-[10px] text-slate-400">Socket</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowPinnedOnly(!showPinnedOnly);
+                      setIsToolsOpen(false);
+                    }}
+                    className="w-full text-left px-3 py-2 rounded-lg text-xs text-amber-200 hover:bg-slate-800 flex items-center justify-between cursor-pointer"
+                  >
+                    <span>📌 {t.pinnedOnly}</span>
+                    <span className="text-[10px] text-slate-400">({pinnedCount})</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleResetDemoWorkspace}
+                    className="w-full text-left px-3 py-2 rounded-lg text-xs text-rose-300 hover:bg-slate-800 flex items-center justify-between cursor-pointer"
+                  >
+                    <span>🔄 {t.resetDemo}</span>
+                    <span className="text-[10px] text-slate-400">63%</span>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </header>
 

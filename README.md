@@ -1,64 +1,139 @@
-# ⚡ TeamSync AI — Real-Time Collaborative Engineering Workspace & AI Sprint Planner
+# TeamSync AI — Real-Time Collaborative Engineering Workspace
 
-**One-Line Purpose:** A full-stack real-time engineering workspace combining multi-channel Socket.io messaging, drag-and-drop Kanban sprint management, debounced collaborative markdown/code editing, and rate-limited Gemini 2.5 Flash sprint automation.
+![CI Status](https://github.com/farukaydinn96-commits/teamsync-ai/actions/workflows/ci.yml/badge.svg)
+![Node](https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen)
+![License](https://img.shields.io/badge/license-MIT-blue)
 
-- **Live Demo (Vercel):** [https://teamsync-workspace-three.vercel.app](https://teamsync-workspace-three.vercel.app)
-- **Backend Health & Telemetry (Render):** [https://teamsync-ai.onrender.com/api/health](https://teamsync-ai.onrender.com/api/health)
+A full-stack collaborative workspace for software teams combining **Socket.io room-isolated messaging**, a **drag-and-drop Kanban sprint board**, an **800ms debounced collaborative markdown/code editor**, **signed JWT Role-Based Access Control (RBAC)**, and **rate-limited Google Gemini 2.5 Flash sprint automation**.
 
----
-
-## 🏗️ System Architecture
-
-    [React 19 + Tailwind v4 SPA]
-          │  ├── Optimistic LocalStorage Cache (0ms channel switching)
-          │  ├── Socket.io WebSocket (join_room, sync_doc_live, task events)
-          │  └── Warm RTT Ping Probe (performance.now() -> /api/health)
-          ▼
-    [Node.js + Express + Socket.io Server]
-          │  ├── Helmet Security Headers & CORS Origin Guard
-          │  ├── Sliding-Window IP Rate Limiter (5 AI req/min, 120/day)
-          │  ├── RBAC Permission Guard (Tech Lead vs Developer roles)
-          │  └── Idempotent Task Deduplicator (/plan duplicate prevention)
-          ├──► [MongoDB Atlas] (Indexed by room; 800ms debounced document writes)
-          └──► [Google Gemini 2.5 Flash SDK] (with Deterministic Fallback Engine)
+- **Live Application (Vercel):** [https://teamsync-workspace-three.vercel.app](https://teamsync-workspace-three.vercel.app)
+- **Backend Health Probe (Render):** [https://teamsync-ai.onrender.com/api/health](https://teamsync-ai.onrender.com/api/health)
+  *(Note: Hosted on Render free tier — the initial request after inactivity may take ~25–40s to wake the container. Meanwhile, the client serves an instant session-isolated local cache and displays a warming banner.)*
 
 ---
 
-## ✨ Key Engineering Decisions & Features
+## Tech Stack
 
-### 1. Hybrid AI Automation: Live Gemini 2.5 Flash + Deterministic Fallback
-- **How it works:** When a user triggers `/plan [feature]` or `/ai [prompt]`, the server first checks the sliding-window rate limiter (`backend/utils/rateLimiter.js`: max **5 requests/min per IP** and **120 requests/day globally**).
-- **Resilience:** If `GEMINI_API_KEY` is active and within quota, tasks and code snippets are generated live via `gemini-2.5-flash` (badged as `⚡ Gemini 2.5 Flash Live`). If the quota is exhausted or the external API times out, the server seamlessly degrades to a **Deterministic Fallback Engine** (`🛡️ Fallback Template`) so the demo never breaks during recruiter evaluations.
-
-### 2. Idempotent Sprint Planning & Balanced Seed Metrics
-- Repeatedly clicking `/plan` will **never** bloat the Kanban board: `deduplicatePlanTasks()` filters out existing task titles case-insensitively before inserting.
-- Generated tasks are automatically distributed across team members (`Faruk_Lead`, `Mert_Backend`, `Ece_Frontend`, `Zeynep_QA`) and priority tiers (`High`, `Medium`, `Low`).
-- Includes a 1-click **`🔄 Reset Demo`** button in the top bar to restore the workspace to a clean **63% Sprint Progress** state (5 Done, 2 In Progress, 1 To Do) and pre-populated poll votes (`58% / 25% / 17%`).
-
-### 3. Role-Based Access Control (RBAC) in Recruiter Demo Mode
-- Switching between **`👑 Tech Lead (Faruk_Lead)`**, **`⚡ Frontend Dev (Ece_Frontend)`**, and **`🛠️ Backend Dev (Mert_Backend)`** in the bottom-left sidebar changes actual workspace permissions:
-  - Only **Tech Lead** can execute `/plan` to generate sprint tasks or delete `High`-priority tasks.
-  - Attempting `/plan` as a standard Developer triggers an immediate RBAC policy guard message.
-
-### 4. Real-Time Verification: Two-Tab Test or 1-Click Teammate Simulator
-- **Option A (1-Click Simulator):** Click **`🤖 Simulate Teammate`** in the top header to watch a simulated teammate (`Ece_Frontend`) broadcast a real-time chat message and move a Kanban card across columns.
-- **Option B (Two-Tab Socket.io Test):** Open the live URL in two side-by-side browser windows, select `Faruk_Lead` in Window 1 and `Ece_Frontend` in Window 2, and drag a Kanban card or type in the **Docs & Code** tab to observe instant WebSocket synchronization.
-
-### 5. How the `Live (ms)` Latency Indicator Is Measured
-- `App.jsx` measures round-trip time (RTT) using high-resolution `performance.now()` timestamps around a `fetch('/api/health', { cache: 'no-store' })` probe every 20 seconds. If the initial probe wakes a sleeping container (`>800ms` cold start), a second warm probe is immediately fired to display accurate warm transport latency.
+- **Frontend:** React 19, Vite, Tailwind CSS v4, Socket.io-Client
+- **Backend:** Node.js (>=20), Express.js, Socket.io, Mongoose (MongoDB Atlas), JSON Web Token (`jsonwebtoken`), Zod (`zod`), Helmet
+- **AI Integration:** Google Generative AI SDK (`@google/generative-ai` — `gemini-2.5-flash`) with an automatic deterministic fallback template engine
+- **Testing & CI:** Native Node.js Test Runner (`node:test`), GitHub Actions CI (`.github/workflows/ci.yml`)
 
 ---
 
-## ⚠️ Known Limitations & Trade-Offs
+## System Architecture
 
-1. **Collaborative Document Concurrency (Last-Write-Wins):**
-   - Keystrokes in the **Docs & Code** tab are broadcast immediately via `sync_doc_live` and persisted to MongoDB after an **800ms debounce** (`save_doc_db`) to prevent database write amplification.
-   - Because full CRDT/OT (e.g., Yjs) was intentionally omitted to keep the client bundle lightweight, simultaneous edits by two users within the same 800ms window follow a **Last-Write-Wins (LWW)** model.
-2. **In-Memory Rate Limiter State:**
-   - The IP rate limiter uses an in-memory `Map` suitable for single-instance deployments; horizontal scaling across multiple Node instances would migrate this bucket to Redis (`INCR` + `EXPIRE`).
+```mermaid
+graph LR
+    subgraph Client ["React 19 + Tailwind v4 SPA (Vercel)"]
+        UI["Chat / Kanban / Docs / Analytics"]
+        Cache["Session-Scoped LocalStorage Cache"]
+        SocketClient["Socket.io Client (Bearer JWT Auth)"]
+    end
+
+    subgraph Server ["Node.js + Express + Socket.io (Render)"]
+        Proxy["Express (trust proxy + Helmet + 10kb limit)"]
+        Guard["workspaceGuard (jwt.verify 401/403 RBAC)"]
+        Validator["Zod Schema & Room Isolation Validator"]
+        Limiter["Sliding-Window Rate Limiter (5 req/min/IP)"]
+    end
+
+    subgraph External ["Persistence & AI Services"]
+        Mongo[("MongoDB Atlas (Compound + Unique + 24h TTL Indexes)")]
+        Gemini["Google Gemini 2.5 Flash API (8s Timeout + Fallback)"]
+    end
+
+    UI <--> Cache
+    UI <--> SocketClient
+    SocketClient <-->|"WebSocket + HTTP"| Proxy
+    Proxy --> Guard --> Validator --> Limiter
+    Limiter --> Mongo
+    Limiter --> Gemini
+```
 
 ---
 
-## 🧪 Running Automated Tests
+## Architecture Decision Records (ADR)
 
-    node --test backend/tests/workspace.test.js
+### 1. Signed JWT RBAC Across REST & Socket.io Handshakes (`backend/middleware/workspaceGuard.js`)
+- **Decision:** Never trust raw client headers (such as `x-workspace-role`). When a reviewer switches demo roles (`Tech Lead` vs `Developer`), the client requests a signed HS256 token from `POST /api/auth/demo-token`.
+- **Enforcement:** `workspaceGuard` verifies the signature via `jwt.verify(token, process.env.JWT_SECRET)` and inspects the embedded `role` claim:
+  - Missing or invalid token returns **`401 Unauthorized`**.
+  - Valid token with insufficient role (e.g., `Developer` attempting `/plan` or deleting a `High`-priority task) returns **`403 Forbidden`**.
+  - The same `verifySocketAction` check runs inside Socket.io event handlers (`/plan`, `delete_task`).
+
+### 2. Session-Scoped Sandbox Isolation & Two-Tab Real-Time Testing
+- **Decision:** Every browser generates a session key (`sess_<id>`) stored in `localStorage`, scoping Socket.io rooms as `sess_<id>:general`.
+- **Benefit:**
+  1. **Zero Cross-Visitor Interference:** If Recruiter A clicks **Reset Session Sandbox**, Recruiter B reviewing the site at the same moment is completely unaffected.
+  2. **Two-Tab Real-Time Sync:** Opening two tabs in the same browser shares `sess_<id>`, allowing instant two-window WebSocket testing.
+  3. **Automatic Cleanup:** MongoDB collections include a 24-hour TTL index (`expireAfterSeconds: 86400`) to purge old demo sessions automatically.
+
+### 3. Hybrid AI Engine: Live Gemini 2.5 Flash + Deterministic Fallback
+- **Decision:** Protect `/plan` and `/ai` with a sliding-window IP rate limiter (`5 req/min per IP`, `120 req/day global`, with periodic bucket cleanup to prevent memory leaks) and an `8000ms` timeout.
+- **Transparency:** Every AI response in the UI displays an explicit source badge indicating whether it was generated by **`⚡ Gemini 2.5 Flash (Live API)`** or **`🛡️ Deterministic Fallback Template`**.
+
+### 4. Duplicate-Preventing Sprint Planning
+- Repeatedly running `/plan [topic]` will not bloat the Kanban board: tasks are filtered by `deduplicatePlanTasks()` and enforced at the database layer via a unique compound index `{ room: 1, normalizedTitle: 1 }`.
+
+### 5. Debounced Collaborative Editor (800ms)
+- Keystrokes in the **Docs & Code** tab broadcast immediately to peers via `sync_doc_live`, while MongoDB writes are debounced by **800ms** (`save_doc_db`) to prevent write amplification.
+
+---
+
+## How to Verify Real-Time Features (Two-Tab Guide or 1-Click Simulator)
+
+1. **Two-Tab Live Test:** Open [https://teamsync-workspace-three.vercel.app](https://teamsync-workspace-three.vercel.app) in two side-by-side browser windows. Drag a Kanban card or type in **Docs & Code** in Window 1 to watch Window 2 update immediately.
+2. **Single-Tab Simulator:** Click **`⚡ Demo Tools ▾ -> 🤖 Simulate Teammate`** in the top-right header to trigger a simulated teammate event that posts a message and moves a Kanban task to `Done`.
+
+---
+
+## Local Setup & Installation
+
+```bash
+# 1. Clone the repository
+git clone [https://github.com/farukaydinn96-commits/teamsync-ai.git](https://github.com/farukaydinn96-commits/teamsync-ai.git)
+cd teamsync-ai
+
+# 2. Configure Backend environment variables
+cp backend/.env.example backend/.env
+cd backend && npm install
+npm run dev
+
+# 3. Configure Frontend environment variables (in a second terminal)
+cp frontend/.env.example frontend/.env
+cd frontend && npm install
+npm run dev
+```
+
+---
+
+## Automated Tests
+
+Run the backend test suite (`node:test`, requires Node.js >= 20):
+
+```bash
+npm --prefix backend test
+```
+
+**Covered Scenarios (`backend/tests/workspace.test.js`):**
+1. **`401 Unauthorized`:** Rejects missing token or forged `x-workspace-role` header.
+2. **`403 Forbidden`:** Rejects valid signed `Developer` JWT when attempting `Tech Lead` actions.
+3. **`200 Authorized`:** Allows valid signed `Tech Lead` JWT across REST and Socket.io guards.
+4. **Duplicate Prevention:** Filters case-insensitive duplicate `/plan` tasks.
+5. **Rate Limiting & Memory Cleanup:** Allows 5 requests/min per IP, blocks the 6th request, and purges expired buckets.
+6. **Room Isolation & Zod Validation:** Validates `sess_<id>:<channel>` room names, blocks NoSQL operator objects, and enforces document size limits.
+
+---
+
+## Known Limitations & Roadmap
+
+### Known Limitations
+- **Document Concurrency (Last-Write-Wins):** Simultaneous edits within the same 800ms debounce window resolve via Last-Write-Wins (with a monotonic `version` counter) rather than full CRDT/OT.
+- **In-Memory Rate Limiter:** The sliding-window limiter uses an in-memory `Map` with periodic garbage collection, suitable for single-instance deployment.
+- **Latency Badge:** The `Live (ms)` indicator in the header measures HTTP round-trip time (`performance.now()` against `GET /api/health`) rather than raw WebSocket frame RTT.
+
+### Roadmap
+- Migrate rate-limiter state to Redis (`INCR` + `EXPIRE`) for multi-instance horizontal scaling.
+- Integrate Yjs (CRDT) for character-level conflict-free collaborative editing.
+- Add end-to-end Playwright tests for multi-tab drag-and-drop workflows.

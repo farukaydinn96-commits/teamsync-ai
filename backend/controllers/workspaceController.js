@@ -1,41 +1,45 @@
 import Message from '../models/Message.js';
 import Task from '../models/Task.js';
 import Document from '../models/Document.js';
+import { roomSchema, normalizeTaskTitle } from '../utils/validators.js';
 
 const FENCE = '\x60\x60\x60';
 
 export const DEFAULT_DOCS = {
-  general: `# TeamSync AI — Architecture & Sprint Notes\n\nReal-time collaborative markdown & code pad (800ms debounced MongoDB persistence, Last-Write-Wins concurrency).\n\n${FENCE}javascript\nexport const workspaceGuard = (allowedRoles = ['Tech Lead']) => (req, res, next) => {\n  const role = req.headers['x-workspace-role'] || 'Developer';\n  if (!allowedRoles.includes(role)) {\n    return res.status(403).json({ error: 'RBAC: Insufficient role permissions' });\n  }\n  next();\n};\n${FENCE}`,
-  development: `# Technical Architecture & API Contracts\n\n- **Realtime Transport:** Socket.io rooms with automatic reconnection & RTT ping measurement\n- **AI Rate Limiting:** 5 req/min per IP + 120 req/day global cap with deterministic fallback\n- **Database:** MongoDB Atlas indexed by room`,
-  'sprint-planning': `# Sprint 4 Goals & Capacity Allocation\n\n1. Maintain >60% sprint velocity across balanced High/Medium/Low tasks\n2. Enforce RBAC permissions on automated /plan generation\n3. Export sprint retrospectives in .md and .json formats`
+  general: `# TeamSync AI — Architecture & Sprint Notes\n\nReal-time collaborative markdown & code pad (800ms debounced MongoDB persistence, Last-Write-Wins concurrency).\n\n${FENCE}javascript\nimport jwt from 'jsonwebtoken';\n\nexport const workspaceGuard = (allowedRoles = ['Tech Lead']) => (req, res, next) => {\n  try {\n    const token = req.headers.authorization?.split(' ')[1];\n    const { username, role } = jwt.verify(token, process.env.JWT_SECRET);\n    if (!role || !allowedRoles.includes(role)) {\n      return res.status(403).json({ message: 'RBAC: Insufficient permissions' });\n    }\n    req.user = { username, role };\n    return next();\n  } catch {\n    return res.status(401).json({ message: 'Invalid or missing token' });\n  }\n};\n${FENCE}`,
+  development: `# Technical Architecture & API Contracts\n\n- **Auth:** Signed JWT (HS256) verified in REST middleware & Socket.io handshake\n- **Rate Limiting:** 5 req/min per IP (with trust proxy enabled) + 120 req/day cap\n- **Database:** MongoDB Atlas with unique (room, normalizedTitle) index & 24h TTL`,
+  'sprint-planning': `# Sprint 4 Goals & Capacity Allocation\n\n1. Maintain >60% sprint velocity across balanced High/Medium/Low tasks\n2. Enforce signed JWT RBAC permissions on automated /plan generation\n3. Export sprint retrospectives in .md and .json formats`
 };
 
 export const SEED_TASKS = [
   {
     room: 'general',
-    title: 'WebSocket (Socket.io) room isolation & RTT latency telemetry',
+    title: 'WebSocket (Socket.io) session-scoped room isolation & RTT telemetry',
+    normalizedTitle: normalizeTaskTitle('WebSocket (Socket.io) session-scoped room isolation & RTT telemetry'),
     status: 'done',
     priority: 'high',
     assignee: 'Faruk_Lead',
     subtasks: [
-      { title: 'Configure join_room namespace isolation', completed: true },
+      { title: 'Configure session-isolated join_room namespaces', completed: true },
       { title: 'Verify CORS & warm ping health check', completed: true }
     ]
   },
   {
     room: 'general',
-    title: 'IP-based Rate Limiting & Helmet security headers for /ai and /plan',
+    title: 'Signed JWT RBAC middleware (workspaceGuard) & Socket handshake auth',
+    normalizedTitle: normalizeTaskTitle('Signed JWT RBAC middleware (workspaceGuard) & Socket handshake auth'),
     status: 'done',
     priority: 'high',
     assignee: 'Mert_Backend',
     subtasks: [
-      { title: 'Implement sliding-window 5 req/min limiter', completed: true },
-      { title: 'Add deterministic fallback when Gemini quota is reached', completed: true }
+      { title: 'Verify role claim from jwt.verify() instead of raw headers', completed: true },
+      { title: 'Return 401 on missing token and 403 on insufficient role', completed: true }
     ]
   },
   {
     room: 'general',
     title: 'Real-time collaborative document editor (800ms Debounce Auto-Save)',
+    normalizedTitle: normalizeTaskTitle('Real-time collaborative document editor (800ms Debounce Auto-Save)'),
     status: 'done',
     priority: 'medium',
     assignee: 'Ece_Frontend',
@@ -46,27 +50,30 @@ export const SEED_TASKS = [
   },
   {
     room: 'general',
-    title: 'Role-Based Access Control (RBAC) for Tech Lead vs Developer profiles',
+    title: 'IP-based Rate Limiting (5 req/min) & Helmet security headers',
+    normalizedTitle: normalizeTaskTitle('IP-based Rate Limiting (5 req/min) & Helmet security headers'),
     status: 'done',
     priority: 'medium',
     assignee: 'Faruk_Lead',
     subtasks: [
-      { title: 'Restrict /plan automation to Tech Lead role', completed: true }
+      { title: 'Enforce sliding-window quota on /plan and /ai', completed: true }
     ]
   },
   {
     room: 'general',
-    title: 'Automated unit test suite (node:test) & GitHub Actions CI pipeline',
+    title: 'Automated unit test suite (401/403 JWT, Rate Limit, Deduplication) & CI',
+    normalizedTitle: normalizeTaskTitle('Automated unit test suite (401/403 JWT, Rate Limit, Deduplication) & CI'),
     status: 'done',
     priority: 'low',
     assignee: 'Zeynep_QA',
     subtasks: [
-      { title: 'Write deduplication and rate-limiter unit tests', completed: true }
+      { title: 'Run node:test in GitHub Actions workflow', completed: true }
     ]
   },
   {
     room: 'general',
     title: 'Gemini 2.5 Flash /plan sprint task deduplication & assignee balancing',
+    normalizedTitle: normalizeTaskTitle('Gemini 2.5 Flash /plan sprint task deduplication & assignee balancing'),
     status: 'in-progress',
     priority: 'medium',
     assignee: 'Mert_Backend',
@@ -77,79 +84,26 @@ export const SEED_TASKS = [
   },
   {
     room: 'general',
-    title: 'Bilingual UI support (TR / EN language switcher) & Command Palette (⌘K)',
+    title: 'Centralized i18n dictionary (EN / TR) & compact responsive header menu',
+    normalizedTitle: normalizeTaskTitle('Centralized i18n dictionary (EN / TR) & compact responsive header menu'),
     status: 'in-progress',
     priority: 'medium',
     assignee: 'Ece_Frontend',
     subtasks: [
-      { title: 'Add header language toggle', completed: true },
-      { title: 'Verify keyboard shortcuts across views', completed: false }
+      { title: 'Remove mixed bilingual strings across views', completed: true },
+      { title: 'Group secondary demo tools into header dropdown', completed: false }
     ]
   },
   {
     room: 'general',
     title: 'Sprint analytics export (.md & .json) with team workload breakdown',
+    normalizedTitle: normalizeTaskTitle('Sprint analytics export (.md & .json) with team workload breakdown'),
     status: 'todo',
     priority: 'low',
     assignee: 'Zeynep_QA',
     subtasks: [
       { title: 'Validate JSON schema output', completed: false }
     ]
-  },
-  {
-    room: 'development',
-    title: 'Optimistic UI state reconciliation with LocalStorage persistence',
-    status: 'done',
-    priority: 'high',
-    assignee: 'Faruk_Lead',
-    subtasks: [
-      { title: 'Zero-latency channel switching', completed: true },
-      { title: 'Background REST hydration', completed: true }
-    ]
-  },
-  {
-    room: 'development',
-    title: 'JWT & RBAC workspaceGuard middleware implementation',
-    status: 'done',
-    priority: 'medium',
-    assignee: 'Mert_Backend',
-    subtasks: [
-      { title: 'Validate x-workspace-role header', completed: true }
-    ]
-  },
-  {
-    room: 'development',
-    title: 'WebSocket reconnection backoff & offline queue handling',
-    status: 'in-progress',
-    priority: 'low',
-    assignee: 'Ece_Frontend',
-    subtasks: [
-      { title: 'Test offline task creation sync', completed: true }
-    ]
-  },
-  {
-    room: 'sprint-planning',
-    title: 'Q4 Sprint capacity planning & story point distribution',
-    status: 'done',
-    priority: 'high',
-    assignee: 'Faruk_Lead',
-    subtasks: [{ title: 'Finalize velocity targets', completed: true }]
-  },
-  {
-    room: 'sprint-planning',
-    title: 'Interactive Recruiter Demo role switching & live teammate simulation',
-    status: 'done',
-    priority: 'medium',
-    assignee: 'Ece_Frontend',
-    subtasks: [{ title: 'Add 1-click teammate simulation', completed: true }]
-  },
-  {
-    room: 'sprint-planning',
-    title: 'Mobile & tablet responsive Kanban layout refinements',
-    status: 'todo',
-    priority: 'low',
-    assignee: 'Zeynep_QA',
-    subtasks: [{ title: 'Test touch drag-and-drop fallback', completed: false }]
   }
 ];
 
@@ -158,7 +112,7 @@ export const SEED_MESSAGES = [
     room: 'general',
     sender: 'Faruk_Lead',
     senderId: 'seed-1',
-    text: 'Welcome team! Sprint 4 is at 63% completion (5/8 tasks done). You can test RBAC roles in the bottom-left sidebar or click "Simulate Teammate" in the top bar to watch live Socket.io updates.',
+    text: 'Welcome team! Sprint 4 is at 63% completion (5 of 8 tasks Done). Each browser session runs in an isolated sandbox room so you can test freely without overwriting another visitor.',
     isAi: false,
     isPinned: true,
     reactions: { '🚀': 4, '🔥': 3 }
@@ -167,23 +121,23 @@ export const SEED_MESSAGES = [
     room: 'general',
     sender: 'TeamSync AI',
     senderId: 'ai-bot',
-    text: '🤖 [Gemini 2.5 Flash + Fallback Engine Ready]: Trigger `/plan [feature]`, `/task [title]`, `/poll Question | Opt1 | Opt2`, or `/ai [question]`. Protected by IP rate limiting (5 req/min) and task deduplication.',
+    text: '🤖 [Gemini 2.5 Flash + Deterministic Fallback Engine]: Use /plan [feature], /task [title], /poll Question | Opt1 | Opt2, or /ai [question]. Protected by signed JWT role claims, IP rate limiting (5 req/min), and task deduplication.',
     isAi: true,
     isPinned: false,
     reactions: { '👍': 3 }
   },
   {
     room: 'general',
-    sender: 'Ece_Frontend',
+    sender: 'Ece_Frontend (Sim)',
     senderId: 'seed-2',
-    text: 'Kanban drag-and-drop, ⌘K Command Palette, and the TR/EN language toggle are live.',
+    text: '[Simulated Teammate]: Kanban drag-and-drop, ⌘K Command Palette, and pure EN/TR i18n dictionary switching are active.',
     isAi: false,
     isPinned: false,
     reactions: { '❤️': 2 }
   },
   {
     room: 'general',
-    sender: 'Mert_Backend',
+    sender: 'Mert_Backend (Sim)',
     senderId: 'seed-3',
     text: '📊 Poll: Distributed Cache & Rate-Limit Store Preference?',
     isAi: false,
@@ -197,15 +151,6 @@ export const SEED_MESSAGES = [
         { text: 'In-Memory Sliding Window', votes: 2 }
       ]
     }
-  },
-  {
-    room: 'development',
-    sender: 'Faruk_Lead',
-    senderId: 'seed-1',
-    text: `Updated our RBAC authorization middleware (` + '`workspaceGuard`' + `) to enforce role permissions before executing privileged workspace actions:\n${FENCE}javascript\nexport const workspaceGuard = (allowedRoles = ['Tech Lead']) => (req, res, next) => {\n  const role = req.headers['x-workspace-role'] || 'Developer';\n  if (!allowedRoles.includes(role)) {\n    return res.status(403).json({ message: 'RBAC: Insufficient permissions' });\n  }\n  return next();\n};\n${FENCE}`,
-    isAi: false,
-    isPinned: true,
-    reactions: { '🔥': 4 }
   }
 ];
 
@@ -217,7 +162,7 @@ export const resetAndSeedWorkspace = async () => {
   await Task.insertMany(SEED_TASKS);
   await Message.insertMany(SEED_MESSAGES);
   await Document.insertMany(
-    Object.entries(DEFAULT_DOCS).map(([room, content]) => ({ room, content }))
+    Object.entries(DEFAULT_DOCS).map(([room, content]) => ({ room, content, version: 1 }))
   );
 };
 
@@ -231,61 +176,77 @@ export const seedInitialData = async () => {
       doneGeneral < 3;
 
     if (isPolluted) {
-      console.log('Refreshing workspace seed data with balanced sprint metrics...');
       await resetAndSeedWorkspace();
     }
   } catch (error) {
-    console.error('Seed error:', error.message);
+    console.warn('Seed warning:', error.message);
   }
 };
 
-export const resetWorkspaceHandler = async (req, res) => {
+export const resetWorkspaceHandler = async (req, res, next) => {
   try {
     await resetAndSeedWorkspace();
-    const room = req.body?.room || 'general';
+    const rawRoom = req.body?.room || 'general';
+    const parsedRoom = roomSchema.safeParse(rawRoom);
+    const baseRoom = parsedRoom.success && rawRoom.includes(':') ? rawRoom.split(':')[1] : 'general';
+
     const [messages, tasks, doc] = await Promise.all([
-      Message.find({ room }).sort({ createdAt: 1 }),
-      Task.find({ room }).sort({ createdAt: 1 }),
-      Document.findOne({ room })
+      Message.find({ room: baseRoom }).sort({ createdAt: 1 }),
+      Task.find({ room: baseRoom }).sort({ createdAt: 1 }),
+      Document.findOne({ room: baseRoom })
     ]);
     res.json({ status: 'reset', messages, tasks, doc });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    next(error);
   }
 };
 
-export const getMessagesByRoom = async (req, res) => {
+export const getMessagesByRoom = async (req, res, next) => {
   try {
-    const messages = await Message.find({ room: req.params.room })
+    const parsed = roomSchema.safeParse(req.params.room);
+    if (!parsed.success) {
+      return res.status(400).json({ message: 'Invalid room parameter' });
+    }
+    const messages = await Message.find({ room: parsed.data })
       .sort({ createdAt: 1 })
       .limit(100);
     res.json(messages);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    next(error);
   }
 };
 
-export const getTasksByRoom = async (req, res) => {
+export const getTasksByRoom = async (req, res, next) => {
   try {
-    const tasks = await Task.find({ room: req.params.room }).sort({ createdAt: 1 });
+    const parsed = roomSchema.safeParse(req.params.room);
+    if (!parsed.success) {
+      return res.status(400).json({ message: 'Invalid room parameter' });
+    }
+    const tasks = await Task.find({ room: parsed.data }).sort({ createdAt: 1 });
     res.json(tasks);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    next(error);
   }
 };
 
-export const getDocByRoom = async (req, res) => {
+export const getDocByRoom = async (req, res, next) => {
   try {
-    const { room } = req.params;
+    const parsed = roomSchema.safeParse(req.params.room);
+    if (!parsed.success) {
+      return res.status(400).json({ message: 'Invalid room parameter' });
+    }
+    const room = parsed.data;
+    const baseRoom = room.includes(':') ? room.split(':')[1] : room;
     let doc = await Document.findOne({ room });
     if (!doc) {
       doc = await Document.create({
         room,
-        content: DEFAULT_DOCS[room] || '# Channel Document\n\nWrite collaborative notes here...'
+        content: DEFAULT_DOCS[baseRoom] || '# Channel Document\n\nWrite collaborative notes here...',
+        version: 1
       });
     }
     res.json(doc);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    next(error);
   }
 };

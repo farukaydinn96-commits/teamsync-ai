@@ -91,7 +91,7 @@ export default function KanbanBoard({
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-6 flex-1 min-h-0">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 flex-1 min-h-0 overflow-x-auto">
         {COLUMNS.map((col) => {
           const colTasks = tasks.filter((t) => t.status === col.id);
           const isHighlighted = dragOverCol === col.id;

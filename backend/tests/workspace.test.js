@@ -3,60 +3,123 @@ import assert from 'node:assert/strict';
 import {
   checkAiRateLimit,
   deduplicatePlanTasks,
-  verifyRolePermission
+  cleanupExpiredBuckets
 } from '../utils/rateLimiter.js';
+import {
+  signDemoToken,
+  workspaceGuard,
+  verifySocketAction
+} from '../middleware/workspaceGuard.js';
+import {
+  roomSchema,
+  taskPayloadSchema,
+  docPayloadSchema
+} from '../utils/validators.js';
 
-test('Sprint seed tasks have balanced statuses (>50% done), mixed priorities, and 4 assignees', () => {
-  const sampleGeneralTasks = [
-    { status: 'done', priority: 'high', assignee: 'Faruk_Lead' },
-    { status: 'done', priority: 'high', assignee: 'Mert_Backend' },
-    { status: 'done', priority: 'medium', assignee: 'Ece_Frontend' },
-    { status: 'done', priority: 'medium', assignee: 'Faruk_Lead' },
-    { status: 'done', priority: 'low', assignee: 'Zeynep_QA' },
-    { status: 'in-progress', priority: 'medium', assignee: 'Mert_Backend' },
-    { status: 'in-progress', priority: 'medium', assignee: 'Ece_Frontend' },
-    { status: 'todo', priority: 'low', assignee: 'Zeynep_QA' }
-  ];
-
-  const doneCount = sampleGeneralTasks.filter((t) => t.status === 'done').length;
-  const progressPct = Math.round((doneCount / sampleGeneralTasks.length) * 100);
-  const priorities = new Set(sampleGeneralTasks.map((t) => t.priority));
-  const assignees = new Set(sampleGeneralTasks.map((t) => t.assignee));
-
-  assert.equal(progressPct, 63);
-  assert.equal(priorities.size, 3);
-  assert.equal(assignees.size, 4);
+const createMockRes = () => ({
+  statusCode: 200,
+  body: null,
+  status(code) {
+    this.statusCode = code;
+    return this;
+  },
+  json(payload) {
+    this.body = payload;
+    return this;
+  }
 });
 
-test('deduplicatePlanTasks prevents duplicate /plan task creation', () => {
-  const existing = [
-    { title: 'OAuth2 Module - Schema & Architecture Design' },
-    { title: 'OAuth2 Module - REST/Socket API & Security Guard' }
-  ];
+test('1. RBAC 401: workspaceGuard rejects missing or forged x-workspace-role header without signed JWT', () => {
+  const guard = workspaceGuard(['Tech Lead']);
+  const reqForged = { headers: { 'x-workspace-role': 'Tech Lead' } };
+  const res = createMockRes();
+  let nextCalled = false;
+
+  guard(reqForged, res, () => {
+    nextCalled = true;
+  });
+
+  assert.equal(nextCalled, false);
+  assert.equal(res.statusCode, 401);
+  assert.equal(res.body.message, 'Invalid or missing token');
+});
+
+test('2. RBAC 403: workspaceGuard rejects valid signed JWT when role claim is Developer instead of Tech Lead', () => {
+  const guard = workspaceGuard(['Tech Lead']);
+  const devToken = signDemoToken({ username: 'Ece_Frontend', role: 'Developer' });
+  const req = { headers: { authorization: `Bearer ${devToken}` } };
+  const res = createMockRes();
+  let nextCalled = false;
+
+  guard(req, res, () => {
+    nextCalled = true;
+  });
+
+  assert.equal(nextCalled, false);
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.body.message, 'RBAC: Insufficient permissions');
+});
+
+test('3. RBAC 200: workspaceGuard & verifySocketAction authorize valid signed Tech Lead JWT', () => {
+  const guard = workspaceGuard(['Tech Lead']);
+  const leadToken = signDemoToken({ username: 'Faruk_Lead', role: 'Tech Lead' });
+  const req = { headers: { authorization: `Bearer ${leadToken}` } };
+  const res = createMockRes();
+  let nextCalled = false;
+
+  guard(req, res, () => {
+    nextCalled = true;
+  });
+
+  assert.equal(nextCalled, true);
+  assert.equal(req.user.role, 'Tech Lead');
+
+  const socketCheck = verifySocketAction(leadToken, ['Tech Lead']);
+  assert.equal(socketCheck.allowed, true);
+  assert.equal(socketCheck.statusCode, 200);
+});
+
+test('4. Duplicate prevention: deduplicatePlanTasks filters case-insensitive and whitespace duplicates', () => {
+  const existing = [{ title: 'OAuth2 Module - Schema & Architecture Design' }];
   const candidates = [
-    'OAuth2 Module - Schema & Architecture Design',
-    'OAuth2 Module - UI Components & State Integration'
+    '  oauth2 module - schema & architecture design  ',
+    'OAuth2 Module - Automated Integration Tests',
+    'OAuth2 Module - Automated Integration Tests'
   ];
 
   const unique = deduplicatePlanTasks(existing, candidates);
   assert.equal(unique.length, 1);
-  assert.equal(unique[0], 'OAuth2 Module - UI Components & State Integration');
+  assert.equal(unique[0], 'OAuth2 Module - Automated Integration Tests');
 });
 
-test('RBAC verifyRolePermission restricts /plan sprint generation to Tech Lead', () => {
-  const leadCheck = verifyRolePermission('Faruk_Lead', 'plan_sprint');
-  const devCheck = verifyRolePermission('Ece_Frontend', 'plan_sprint');
-
-  assert.equal(leadCheck.allowed, true);
-  assert.equal(devCheck.allowed, false);
-});
-
-test('checkAiRateLimit enforces 5 requests per minute per client IP', () => {
-  const testIp = `test-ip-${Date.now()}`;
+test('5. Rate Limiter: allows 5 requests/min per IP, blocks the 6th, and cleans up expired buckets', () => {
+  const ip = `client-ip-${Date.now()}`;
   for (let i = 0; i < 5; i++) {
-    const res = checkAiRateLimit(testIp);
-    assert.equal(res.allowed, true);
+    assert.equal(checkAiRateLimit(ip).allowed, true);
   }
-  const sixth = checkAiRateLimit(testIp);
+  const sixth = checkAiRateLimit(ip);
   assert.equal(sixth.allowed, false);
+
+  cleanupExpiredBuckets(Date.now() + 61_000);
+  assert.equal(checkAiRateLimit(ip).allowed, true);
+});
+
+test('6. Socket.io Room Isolation & Zod Input Validation: accepts session-scoped rooms and blocks injection', () => {
+  assert.equal(roomSchema.safeParse('sess_ab12cd:general').success, true);
+  assert.equal(roomSchema.safeParse('general').success, true);
+  assert.equal(roomSchema.safeParse('unauthorized_secret_room').success, false);
+  assert.equal(roomSchema.safeParse({ $gt: '' }).success, false);
+
+  const validTask = taskPayloadSchema.safeParse({
+    room: 'sess_ab12cd:development',
+    title: 'Implement Zod validation',
+    priority: 'high'
+  });
+  assert.equal(validTask.success, true);
+
+  const oversizedDoc = docPayloadSchema.safeParse({
+    room: 'general',
+    content: 'x'.repeat(55000)
+  });
+  assert.equal(oversizedDoc.success, false);
 });
