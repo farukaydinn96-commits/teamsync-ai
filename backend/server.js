@@ -2,6 +2,7 @@ import express from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
+import helmet from 'helmet';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import { GoogleGenerativeAI } from '@google/generative-ai';
@@ -9,7 +10,12 @@ import Message from './models/Message.js';
 import Task from './models/Task.js';
 import Document from './models/Document.js';
 import workspaceRoutes from './routes/workspaceRoutes.js';
-import { seedInitialData } from './controllers/workspaceController.js';
+import { seedInitialData, resetAndSeedWorkspace } from './controllers/workspaceController.js';
+import {
+  checkAiRateLimit,
+  deduplicatePlanTasks,
+  verifyRolePermission
+} from './utils/rateLimiter.js';
 
 dotenv.config();
 
@@ -19,7 +25,7 @@ const server = http.createServer(app);
 
 const allowedOrigins = [
   process.env.CLIENT_URL,
-  'https://teamsync-workspace-three.vercel.app',
+  '[https://teamsync-workspace-three.vercel.app](https://teamsync-workspace-three.vercel.app)',
   'http://localhost:5173',
   'http://localhost:4173'
 ].filter(Boolean);
@@ -35,15 +41,15 @@ const corsOriginHandler = (origin, callback) => {
   return callback(new Error('Not allowed by CORS'));
 };
 
+app.use(helmet());
 app.use(
   cors({
     origin: corsOriginHandler,
     credentials: true
   })
 );
-app.use(express.json());
+app.use(express.json({ limit: '64kb' }));
 
-// Render Keep-Alive ve MongoDB bağlantı sıcaklığı kontrolü
 app.get('/api/health', (req, res) => {
   if (mongoose.connection.readyState === 1 && mongoose.connection.db) {
     mongoose.connection.db.admin().ping().catch(() => {});
@@ -51,6 +57,10 @@ app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     db: mongoose.connection.readyState === 1 ? 'connected' : 'warming',
+    aiConfigured: Boolean(
+      process.env.GEMINI_API_KEY &&
+        process.env.GEMINI_API_KEY !== 'buraya_kendi_gemini_api_keyini_yapistir'
+    ),
     timestamp: Date.now()
   });
 });
@@ -65,28 +75,39 @@ const io = new Server(server, {
   }
 });
 
-mongoose
-  .connect(process.env.MONGO_URI)
-  .then(async () => {
-    console.log('MongoDB Baglandi');
-    await seedInitialData();
-  })
-  .catch((err) => console.error(err.message));
+if (process.env.MONGO_URI) {
+  mongoose
+    .connect(process.env.MONGO_URI, { serverSelectionTimeoutMS: 8000 })
+    .then(async () => {
+      console.log('MongoDB Connected');
+      await seedInitialData();
+    })
+    .catch((err) => console.warn('MongoDB connection warning:', err.message));
+}
 
-const genAI = process.env.GEMINI_API_KEY
-  ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
-  : null;
+const genAI =
+  process.env.GEMINI_API_KEY &&
+  process.env.GEMINI_API_KEY !== 'buraya_kendi_gemini_api_keyini_yapistir'
+    ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
+    : null;
 
 const roomUsers = {};
+const TEAM_ROSTER = ['Faruk_Lead', 'Ece_Frontend', 'Mert_Backend', 'Zeynep_QA'];
+const PLAN_PRIORITIES = ['high', 'medium', 'medium', 'low'];
 
 io.on('connection', (socket) => {
+  const clientIp =
+    socket.handshake.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
+    socket.handshake.address ||
+    socket.id;
+
   socket.on('join_room', ({ room, username, isFocusing }) => {
     socket.join(room);
     socket.currentRoom = room;
     socket.username = username;
 
     if (!roomUsers[room]) roomUsers[room] = new Map();
-    roomUsers[room].set(username, { username, isFocusing: !!isFocusing });
+    roomUsers[room].set(username, { username, isFocusing: Boolean(isFocusing) });
 
     io.to(room).emit('room_users', Array.from(roomUsers[room].values()));
   });
@@ -111,6 +132,26 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('reset_workspace', async ({ room }) => {
+    try {
+      await resetAndSeedWorkspace();
+      const targetRoom = room || 'general';
+      const [messages, tasks, doc] = await Promise.all([
+        Message.find({ room: targetRoom }).sort({ createdAt: 1 }),
+        Task.find({ room: targetRoom }).sort({ createdAt: 1 }),
+        Document.findOne({ room: targetRoom })
+      ]);
+      io.to(targetRoom).emit('workspace_reset', {
+        room: targetRoom,
+        messages,
+        tasks,
+        doc: doc?.content || ''
+      });
+    } catch (error) {
+      console.error(error.message);
+    }
+  });
+
   socket.on('send_message', async (data) => {
     try {
       if (data.text.startsWith('/poll ')) {
@@ -122,13 +163,16 @@ io.on('connection', (socket) => {
 
         if (parts.length >= 2) {
           const question = parts[0];
-          const options = parts.slice(1).map((opt) => ({ text: opt, votes: 0 }));
+          const options = parts.slice(1).map((opt, idx) => ({
+            text: opt,
+            votes: idx === 0 ? 1 : 0
+          }));
 
           const pollMsg = await Message.create({
             room: data.room,
             sender: data.sender,
             senderId: data.senderId,
-            text: `📊 Anket: ${question}`,
+            text: `📊 Poll: ${question}`,
             poll: { question, options }
           });
 
@@ -155,11 +199,11 @@ io.on('connection', (socket) => {
             room: data.room,
             title: taskTitle,
             status: 'todo',
-            priority: 'high',
+            priority: 'medium',
             assignee: data.sender,
             subtasks: [
-              { title: 'Gereksinimleri analiz et', completed: false },
-              { title: 'Geliştirme ve testleri tamamla', completed: false }
+              { title: 'Analyze technical requirements', completed: false },
+              { title: 'Implement & add unit tests', completed: false }
             ]
           });
 
@@ -169,7 +213,7 @@ io.on('connection', (socket) => {
             room: data.room,
             sender: 'TeamSync AI',
             senderId: 'ai-bot',
-            text: `✅ "${taskTitle}" görevi alt adımlarıyla birlikte Kanban panosuna (${data.sender} adına) eklendi.`,
+            text: `✅ Task "${taskTitle}" created and assigned to ${data.sender} on the Kanban board.`,
             isAi: true
           });
 
@@ -179,20 +223,47 @@ io.on('connection', (socket) => {
       }
 
       if (data.text.startsWith('/plan ')) {
+        const rbac = verifyRolePermission(data.sender, 'plan_sprint');
+        if (!rbac.allowed) {
+          const denyMsg = await Message.create({
+            room: data.room,
+            sender: 'TeamSync AI',
+            senderId: 'ai-bot',
+            text: `🔒 ${rbac.message}`,
+            isAi: true
+          });
+          io.to(data.room).emit('receive_message', denyMsg);
+          return;
+        }
+
+        const rateStatus = checkAiRateLimit(clientIp);
+        if (!rateStatus.allowed) {
+          const limitMsg = await Message.create({
+            room: data.room,
+            sender: 'TeamSync AI',
+            senderId: 'ai-bot',
+            text: `⏳ [Rate Limiter]: ${rateStatus.reason}`,
+            isAi: true
+          });
+          io.to(data.room).emit('receive_message', limitMsg);
+          return;
+        }
+
         const topic = data.text.replace('/plan ', '').trim();
         if (topic) {
           let generatedTasks = [
-            `${topic} - Mimari ve Veritabanı Şema Tasarımı`,
-            `${topic} - Backend API ve İş Mantığı Geliştirmesi`,
-            `${topic} - Frontend Arayüz ve State Entegrasyonu`,
-            `${topic} - Uçtan Uca (E2E) Test ve Optimizasyon`
+            `${topic} - Schema & Architecture Design`,
+            `${topic} - REST/Socket API & Security Guard`,
+            `${topic} - UI Components & State Integration`,
+            `${topic} - Automated Integration Tests`
           ];
+          let engineLabel = '🛡️ Deterministic Fallback Engine';
 
-          if (genAI && process.env.GEMINI_API_KEY !== 'buraya_kendi_gemini_api_keyini_yapistir') {
+          if (genAI) {
             try {
               const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
               const result = await model.generateContent(
-                `"${topic}" konusu için yazılım geliştirme sprintinde yapılacak 4 net teknik görevi her satırda bir görev olacak şekilde, başında numara veya tire olmadan sadece görev başlığı olarak yaz.`
+                `Write 4 concise software engineering sprint task titles for "${topic}". One task per line, no bullets or numbers.`
               );
               const lines = result.response
                 .text()
@@ -200,22 +271,41 @@ io.on('connection', (socket) => {
                 .map((l) => l.replace(/^[-*0-9.)\s]+/, '').trim())
                 .filter(Boolean)
                 .slice(0, 4);
-              if (lines.length >= 2) generatedTasks = lines;
+              if (lines.length >= 2) {
+                generatedTasks = lines;
+                engineLabel = '⚡ Gemini 2.5 Flash (Live API)';
+              }
             } catch (err) {
-              console.error(err.message);
+              console.warn('Gemini fallback used:', err.message);
             }
           }
 
-          for (const title of generatedTasks) {
+          const existingRoomTasks = await Task.find({ room: data.room });
+          const uniqueTitles = deduplicatePlanTasks(existingRoomTasks, generatedTasks);
+
+          if (uniqueTitles.length === 0) {
+            const dupMsg = await Message.create({
+              room: data.room,
+              sender: 'TeamSync AI',
+              senderId: 'ai-bot',
+              text: `ℹ️ [Idempotency Guard]: Sprint tasks for "${topic}" already exist on the Kanban board. Duplicate task creation was prevented to keep sprint metrics clean.`,
+              isAi: true
+            });
+            io.to(data.room).emit('receive_message', dupMsg);
+            return;
+          }
+
+          for (let i = 0; i < uniqueTitles.length; i++) {
+            const title = uniqueTitles[i];
             const created = await Task.create({
               room: data.room,
               title,
-              status: 'todo',
-              priority: 'high',
-              assignee: data.sender,
+              status: i === 0 ? 'in-progress' : 'todo',
+              priority: PLAN_PRIORITIES[i % PLAN_PRIORITIES.length],
+              assignee: TEAM_ROSTER[i % TEAM_ROSTER.length],
               subtasks: [
-                { title: 'Kodlamayı tamamla', completed: false },
-                { title: 'PR incelemesinden geçir', completed: false }
+                { title: 'Complete implementation', completed: i === 0 },
+                { title: 'Pass PR review & unit tests', completed: false }
               ]
             });
             io.to(data.room).emit('task_created', created);
@@ -226,8 +316,13 @@ io.on('connection', (socket) => {
             sender: 'TeamSync AI',
             senderId: 'ai-bot',
             text:
-              `🚀 "${topic}" için ${generatedTasks.length} adet sprint görevi otomatik oluşturuldu ve Kanban panosuna eklendi:\n` +
-              generatedTasks.map((t) => `• ${t}`).join('\n'),
+              `🚀 [${engineLabel}]: Created ${uniqueTitles.length} deduplicated sprint tasks for "${topic}" across team members:\n` +
+              uniqueTitles
+                .map(
+                  (t, i) =>
+                    `• [${PLAN_PRIORITIES[i % PLAN_PRIORITIES.length].toUpperCase()}] ${t} → @${TEAM_ROSTER[i % TEAM_ROSTER.length]}`
+                )
+                .join('\n'),
             isAi: true
           });
 
@@ -237,18 +332,33 @@ io.on('connection', (socket) => {
       }
 
       if (data.text.startsWith('/ai ')) {
-        const prompt = data.text.replace('/ai ', '').trim();
-        let aiReplyText = `🤖 [AI Analizi]: "${prompt}" konusu için önerilen teknik yaklaşım:\n${FENCE}javascript\nasync function executeWorkflow(payload) {\n  return { status: "optimized", target: "${prompt}" };\n}\n${FENCE}`;
+        const rateStatus = checkAiRateLimit(clientIp);
+        if (!rateStatus.allowed) {
+          const limitMsg = await Message.create({
+            room: data.room,
+            sender: 'TeamSync AI',
+            senderId: 'ai-bot',
+            text: `⏳ [Rate Limiter]: ${rateStatus.reason}`,
+            isAi: true
+          });
+          io.to(data.room).emit('receive_message', limitMsg);
+          return;
+        }
 
-        if (genAI && process.env.GEMINI_API_KEY !== 'buraya_kendi_gemini_api_keyini_yapistir') {
+        const prompt = data.text.replace('/ai ', '').trim();
+        let aiReplyText =
+          `🤖 [🛡️ Deterministic Fallback Template — "${prompt}"]:\n` +
+          `${FENCE}javascript\nexport const workspaceGuard = (allowedRoles = ['Tech Lead', 'Admin']) => {\n  return (req, res, next) => {\n    const userRole = req.headers['x-workspace-role'];\n    const token = req.headers.authorization?.split(' ')[1];\n    if (!token || !allowedRoles.includes(userRole)) {\n      return res.status(403).json({\n        error: 'Forbidden: Insufficient RBAC role permissions'\n      });\n    }\n    return next();\n  };\n};\n${FENCE}`;
+
+        if (genAI) {
           try {
             const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
             const result = await model.generateContent(
-              `Sen TeamSync AI adında teknik bir takım asistanısın. Kısa, net ve profesyonel yanıt ver: ${prompt}`
+              `You are TeamSync AI, a senior software engineering assistant. Give a concise, production-grade answer with clean code if applicable: ${prompt}`
             );
-            aiReplyText = result.response.text();
+            aiReplyText = `🤖 [⚡ Gemini 2.5 Flash Live]:\n${result.response.text()}`;
           } catch (aiErr) {
-            aiReplyText = `AI Servis Hatası: ${aiErr.message}`;
+            console.warn('Gemini fallback used:', aiErr.message);
           }
         }
 
@@ -306,10 +416,16 @@ io.on('connection', (socket) => {
 
   socket.on('create_task', async (data) => {
     try {
+      const existing = await Task.findOne({
+        room: data.room,
+        title: { $regex: new RegExp(`^${data.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }
+      });
+      if (existing) return;
+
       const newTask = await Task.create({
         room: data.room,
         title: data.title,
-        status: 'todo',
+        status: data.status || 'todo',
         priority: data.priority || 'medium',
         assignee: data.assignee,
         subtasks: data.subtasks || []
@@ -379,4 +495,4 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 5001;
-server.listen(PORT, () => console.log(`Sunucu ${PORT} portunda calisiyor`));
+server.listen(PORT, () => console.log(`TeamSync AI Server running on port ${PORT}`));

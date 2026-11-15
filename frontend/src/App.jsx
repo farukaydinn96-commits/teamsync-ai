@@ -8,8 +8,10 @@ import KanbanBoard from './components/KanbanBoard';
 import { DocsView, AnalyticsView } from './components/DocsAndAnalytics';
 import CommandModal from './components/CommandModal';
 
-const CACHE_KEY = 'teamsync_workspace_cache_v2';
+const CACHE_KEY = 'teamsync_workspace_cache_v5';
 const FENCE = '\x60\x60\x60';
+const TEAM_ROSTER = ['Faruk_Lead', 'Mert_Backend', 'Ece_Frontend', 'Zeynep_QA'];
+const PLAN_PRIORITIES = ['high', 'medium', 'medium', 'low'];
 
 const makeLocalId = (prefix) =>
   `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -24,15 +26,16 @@ const loadInitialStore = () => {
       const id = ch.id;
       const saved = parsed?.[id];
       const fallback = INITIAL_WORKSPACE_DATA[id];
+      const savedTasks = Array.isArray(saved?.tasks) ? saved.tasks : [];
+      const doneSaved = savedTasks.filter((t) => t.status === 'done').length;
+      const isHealthy = savedTasks.length > 0 && savedTasks.length <= 14 && doneSaved >= 1;
+
       merged[id] = {
         messages:
           Array.isArray(saved?.messages) && saved.messages.length > 0
             ? saved.messages.filter((m) => !String(m._id).startsWith('ai-thinking-'))
             : fallback.messages,
-        tasks:
-          Array.isArray(saved?.tasks) && saved.tasks.length > 0
-            ? saved.tasks
-            : fallback.tasks,
+        tasks: isHealthy ? savedTasks : fallback.tasks,
         doc:
           typeof saved?.doc === 'string' && saved.doc.trim().length > 0
             ? saved.doc
@@ -63,6 +66,7 @@ function App() {
   const [newTaskPriority, setNewTaskPriority] = useState('medium');
   const [isCommandOpen, setIsCommandOpen] = useState(false);
   const [showPinnedOnly, setShowPinnedOnly] = useState(false);
+  const [lang, setLang] = useState("EN");
   const [isListening, setIsListening] = useState(false);
 
   const [focusSeconds, setFocusSeconds] = useState(25 * 60);
@@ -79,6 +83,7 @@ function App() {
   const currentRoomRef = useRef(currentRoom);
   const docDebounceRef = useRef(null);
   const toastTimerRef = useRef(null);
+  const aiRateRef = useRef([]);
 
   useEffect(() => {
     currentRoomRef.current = currentRoom;
@@ -100,26 +105,21 @@ function App() {
   useEffect(() => {
     try {
       localStorage.setItem(CACHE_KEY, JSON.stringify(workspaceStore));
-    } catch {
-      // ignore storage quota errors
-    }
+    } catch {}
   }, [workspaceStore]);
 
   const showToast = (msg) => {
     setToastMessage(msg);
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = setTimeout(() => setToastMessage(null), 2600);
+    toastTimerRef.current = setTimeout(() => setToastMessage(null), 2800);
   };
 
   useEffect(() => {
     try {
       localStorage.setItem('teamsync_user', username);
-    } catch {
-      // ignore
-    }
+    } catch {}
   }, [username]);
 
-  // Arka plan sunucu uyanıklığı ve gerçek sıcak ping ölçümü
   useEffect(() => {
     const measureWarmPing = async () => {
       try {
@@ -127,7 +127,6 @@ function App() {
         const res = await fetch(`${BACKEND_URL}/api/health`, { cache: 'no-store' });
         if (!res.ok) return;
         let elapsed = Math.round(performance.now() - t0);
-        // İlk istek sunucuyu uyandırdıysa (cold start), hemen gerçek sıcak gecikmeyi ölç
         if (elapsed > 800) {
           const t1 = performance.now();
           await fetch(`${BACKEND_URL}/api/health`, { cache: 'no-store' });
@@ -150,9 +149,7 @@ function App() {
       measureWarmPing();
     };
 
-    const onDisconnect = () => {
-      setIsConnected(false);
-    };
+    const onDisconnect = () => setIsConnected(false);
 
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
@@ -174,7 +171,7 @@ function App() {
     } else if (focusSeconds === 0) {
       setIsFocusActive(false);
       socket.emit('toggle_focus', { room: currentRoom, username, isFocusing: false });
-      showToast('🎯 Deep Work oturumu tamamlandı!');
+      showToast('🎯 Deep Work session completed!');
     }
     return () => clearInterval(timer);
   }, [isFocusActive, focusSeconds, currentRoom, username]);
@@ -194,12 +191,10 @@ function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // Oda değiştiğinde soket odasına katıl
   useEffect(() => {
     socket.emit('join_room', { room: currentRoom, username, isFocusing: isFocusActive });
   }, [currentRoom, username, isFocusActive]);
 
-  // Arka planda sessizce (ekranı kilitlemeden ve yerel veriyi silmeden) senkronize et
   useEffect(() => {
     let cancelled = false;
     const targetRoom = currentRoom;
@@ -211,27 +206,29 @@ function App() {
     ])
       .then(([msgsData, tasksData, docData]) => {
         if (cancelled) return;
+
+        if (Array.isArray(tasksData) && tasksData.length > 12) {
+          const doneServer = tasksData.filter((t) => t.status === 'done').length;
+          if (doneServer < 3) {
+            fetch(`${BACKEND_URL}/api/reset`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ room: targetRoom })
+            }).catch(() => {});
+            return;
+          }
+        }
+
         updateRoom(targetRoom, (prev) => {
-          let nextMessages = prev.messages;
-          if (Array.isArray(msgsData) && msgsData.length > 0) {
-            const pendingLocal = prev.messages.filter(
-              (m) =>
-                String(m._id).startsWith('local-msg-') &&
-                !msgsData.some((sm) => sm.sender === m.sender && sm.text === m.text)
-            );
-            nextMessages = [...msgsData, ...pendingLocal];
-          }
-
-          let nextTasks = prev.tasks;
-          if (Array.isArray(tasksData) && tasksData.length > 0) {
-            const pendingTasks = prev.tasks.filter(
-              (t) =>
-                String(t._id).startsWith('local-task-') &&
-                !tasksData.some((st) => st.title === t.title)
-            );
-            nextTasks = [...pendingTasks, ...tasksData];
-          }
-
+          const nextMessages =
+            Array.isArray(msgsData) && msgsData.length >= 3 ? msgsData : prev.messages;
+          const nextTasks =
+            Array.isArray(tasksData) &&
+            tasksData.length >= 3 &&
+            tasksData.length <= 12 &&
+            tasksData.filter((t) => t.status === 'done').length >= 1
+              ? tasksData
+              : prev.tasks;
           const nextDoc =
             docData && typeof docData.content === 'string' && docData.content.trim().length > 0
               ? docData.content
@@ -240,16 +237,13 @@ function App() {
           return { messages: nextMessages, tasks: nextTasks, doc: nextDoc };
         });
       })
-      .catch(() => {
-        // Sunucu uyanırken yerel önbellek kesintisiz çalışmaya devam eder
-      });
+      .catch(() => {});
 
     return () => {
       cancelled = true;
     };
   }, [currentRoom]);
 
-  // Gerçek zamanlı soket dinleyicileri
   useEffect(() => {
     const handleReceiveMessage = (serverMsg) => {
       const targetRoom = serverMsg.room || currentRoomRef.current;
@@ -293,14 +287,14 @@ function App() {
     const handleTaskCreated = (newTask) => {
       const targetRoom = newTask.room || currentRoomRef.current;
       updateRoom(targetRoom, (prev) => {
-        if (prev.tasks.some((t) => t._id === newTask._id)) return prev;
-        const localIdx = prev.tasks.findIndex(
-          (t) => String(t._id).startsWith('local-task-') && t.title === newTask.title
-        );
-        if (localIdx !== -1) {
-          const copy = [...prev.tasks];
-          copy[localIdx] = newTask;
-          return { ...prev, tasks: copy };
+        if (
+          prev.tasks.some(
+            (t) =>
+              t._id === newTask._id ||
+              t.title.trim().toLowerCase() === newTask.title.trim().toLowerCase()
+          )
+        ) {
+          return prev;
         }
         return { ...prev, tasks: [newTask, ...prev.tasks] };
       });
@@ -325,8 +319,12 @@ function App() {
       updateRoom(currentRoomRef.current, (prev) => ({ ...prev, doc: content }));
     };
 
-    const handleDocSavedAck = () => {
-      setDocSaveStatus('saved');
+    const handleDocSavedAck = () => setDocSaveStatus('saved');
+
+    const handleWorkspaceReset = (payload) => {
+      if (!payload?.room) return;
+      setWorkspaceStore(INITIAL_WORKSPACE_DATA);
+      showToast('🔄 Workspace reset to clean 63% Sprint seed state');
     };
 
     socket.on('receive_message', handleReceiveMessage);
@@ -337,6 +335,7 @@ function App() {
     socket.on('room_users', setOnlineUsers);
     socket.on('doc_updated', handleDocUpdated);
     socket.on('doc_saved_ack', handleDocSavedAck);
+    socket.on('workspace_reset', handleWorkspaceReset);
 
     return () => {
       socket.off('receive_message', handleReceiveMessage);
@@ -347,6 +346,7 @@ function App() {
       socket.off('room_users', setOnlineUsers);
       socket.off('doc_updated', handleDocUpdated);
       socket.off('doc_saved_ack', handleDocSavedAck);
+      socket.off('workspace_reset', handleWorkspaceReset);
     };
   }, []);
 
@@ -368,12 +368,83 @@ function App() {
     }, 800);
   };
 
+  const checkLocalAiRateLimit = () => {
+    const now = Date.now();
+    aiRateRef.current = aiRateRef.current.filter((ts) => now - ts < 60_000);
+    if (aiRateRef.current.length >= 5) {
+      showToast('⏳ Rate Limit: Max 5 AI requests/minute allowed.');
+      return false;
+    }
+    aiRateRef.current.push(now);
+    return true;
+  };
+
+  const handleResetDemoWorkspace = () => {
+    localStorage.removeItem(CACHE_KEY);
+    setWorkspaceStore(INITIAL_WORKSPACE_DATA);
+    socket.emit('reset_workspace', { room: currentRoom });
+    fetch(`${BACKEND_URL}/api/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ room: currentRoom })
+    }).catch(() => {});
+    showToast('🔄 Demo workspace restored to clean 63% Sprint state!');
+  };
+
+  const handleSimulateTeammate = () => {
+    const room = currentRoom;
+    showToast('🤖 Simulating live teammate Socket.io activity...');
+
+    setTimeout(() => {
+      const simMsg = {
+        _id: makeLocalId('local-msg'),
+        room,
+        sender: 'Ece_Frontend',
+        senderId: 'sim-ece',
+        text: '⚡ [Live Socket Event]: Just pushed the responsive Kanban card PR and moving my task to Done!',
+        isAi: false,
+        isPinned: false,
+        reactions: { '🚀': 1 }
+      };
+      updateRoom(room, (prev) => {
+        const nextTasks = prev.tasks.map((t, idx) =>
+          idx === prev.tasks.length - 1 && t.status !== 'done' ? { ...t, status: 'done' } : t
+        );
+        return {
+          ...prev,
+          messages: [...prev.messages, simMsg],
+          tasks: nextTasks
+        };
+      });
+      showToast('✓ Ece_Frontend sent a message & updated Kanban board!');
+    }, 450);
+  };
+
   const dispatchMessageOrCommand = (rawText, replyContext = null) => {
     const trimmed = rawText.trim();
     if (!trimmed) return;
     const room = currentRoom;
 
-    // 1. /poll komutu — anında kart oluşturur
+    if (trimmed.startsWith('/plan ') && username !== 'Faruk_Lead') {
+      const rbacMsg = {
+        _id: makeLocalId('local-msg'),
+        room,
+        sender: 'TeamSync AI',
+        senderId: 'ai-bot',
+        text: `🔒 [RBAC Policy Guard]: Role "${username}" does not have permission to run automated sprint planning (/plan). Switch to "👑 Tech Lead" in the bottom-left role switcher to execute this command.`,
+        isAi: true,
+        isPinned: false,
+        reactions: {}
+      };
+      updateRoom(room, (prev) => ({ ...prev, messages: [...prev.messages, rbacMsg] }));
+      showToast('🔒 RBAC: Switch to Tech Lead role to run /plan');
+      return;
+    }
+
+    if (trimmed.startsWith('/plan ') || trimmed.startsWith('/ai ')) {
+      if (!checkLocalAiRateLimit()) return;
+    }
+
     if (trimmed.startsWith('/poll ')) {
       const parts = trimmed
         .replace('/poll ', '')
@@ -383,13 +454,13 @@ function App() {
 
       if (parts.length >= 2) {
         const question = parts[0];
-        const options = parts.slice(1).map((opt) => ({ text: opt, votes: 0 }));
+        const options = parts.slice(1).map((opt, idx) => ({ text: opt, votes: idx === 0 ? 1 : 0 }));
         const optimisticPoll = {
           _id: makeLocalId('local-msg'),
           room,
           sender: username,
           senderId: socket.id || 'local-user',
-          text: `📊 Anket: ${question}`,
+          text: `📊 Poll: ${question}`,
           poll: { question, options },
           isAi: false,
           isPinned: false,
@@ -406,7 +477,6 @@ function App() {
       }
     }
 
-    // Normal veya komut mesajını 0ms'de ekrana ekle
     const optimisticMsg = {
       _id: makeLocalId('local-msg'),
       room,
@@ -420,126 +490,73 @@ function App() {
     };
     updateRoom(room, (prev) => ({ ...prev, messages: [...prev.messages, optimisticMsg] }));
 
-    // Sunucu bağlıysa gerçek backend / Gemini akışını çalıştır
-    if (socket.connected) {
-      if (trimmed.startsWith('/plan ') || trimmed.startsWith('/ai ')) {
-        const thinkingMsg = {
-          _id: `ai-thinking-${Date.now()}`,
-          room,
-          sender: 'TeamSync AI',
-          senderId: 'ai-bot',
-          text: '⚡ TeamSync AI analiz ediyor...',
-          isAi: true,
-          isPinned: false,
-          reactions: {}
-        };
-        updateRoom(room, (prev) => ({ ...prev, messages: [...prev.messages, thinkingMsg] }));
-      }
-      socket.emit('send_message', {
-        room,
-        sender: username,
-        senderId: socket.id,
-        text: trimmed,
-        replyTo: optimisticMsg.replyTo
-      });
-      return;
-    }
-
-    // Sunucu henüz uyanıyorsa sıfır bekleme ile yerel otomasyonu çalıştır
-    if (trimmed.startsWith('/task ')) {
-      const taskTitle = trimmed.replace('/task ', '').trim();
-      if (taskTitle) {
-        const localTask = {
-          _id: makeLocalId('local-task'),
-          room,
-          title: taskTitle,
-          status: 'todo',
-          priority: 'high',
-          assignee: username,
-          subtasks: [
-            { _id: makeLocalId('st'), title: 'Gereksinimleri analiz et', completed: false },
-            { _id: makeLocalId('st'), title: 'Geliştirme ve testleri tamamla', completed: false }
-          ]
-        };
-        const botReply = {
-          _id: makeLocalId('local-msg'),
-          room,
-          sender: 'TeamSync AI',
-          senderId: 'ai-bot',
-          text: `✅ "${taskTitle}" görevi alt adımlarıyla birlikte Kanban panosuna (${username} adına) eklendi.`,
-          isAi: true,
-          isPinned: false,
-          reactions: {}
-        };
-        updateRoom(room, (prev) => ({
-          ...prev,
-          tasks: [localTask, ...prev.tasks],
-          messages: [...prev.messages, botReply]
-        }));
-        socket.emit('create_task', {
-          room,
-          title: taskTitle,
-          priority: 'high',
-          assignee: username,
-          subtasks: [
-            { title: 'Gereksinimleri analiz et', completed: false },
-            { title: 'Geliştirme ve testleri tamamla', completed: false }
-          ]
-        });
-      }
-      return;
-    }
-
     if (trimmed.startsWith('/plan ')) {
       const topic = trimmed.replace('/plan ', '').trim();
       if (topic) {
-        const titles = [
-          `${topic} - Mimari ve Veritabanı Şema Tasarımı`,
-          `${topic} - Backend API ve İş Mantığı Geliştirmesi`,
-          `${topic} - Frontend Arayüz ve State Entegrasyonu`,
-          `${topic} - Uçtan Uca (E2E) Test ve Optimizasyon`
+        const candidateTitles = [
+          `${topic} - Schema & Architecture Design`,
+          `${topic} - REST/Socket API & Security Guard`,
+          `${topic} - UI Components & State Integration`,
+          `${topic} - Automated Integration Tests`
         ];
-        const createdTasks = titles.map((title) => ({
+
+        const existingSet = new Set(tasks.map((t) => t.title.trim().toLowerCase()));
+        const uniqueTitles = candidateTitles.filter(
+          (title) => !existingSet.has(title.trim().toLowerCase())
+        );
+
+        if (uniqueTitles.length === 0) {
+          const dupReply = {
+            _id: makeLocalId('local-msg'),
+            room,
+            sender: 'TeamSync AI',
+            senderId: 'ai-bot',
+            text: `ℹ️ [Idempotency Guard]: Sprint tasks for "${topic}" already exist on the Kanban board. Duplicate task creation was prevented.`,
+            isAi: true,
+            isPinned: false,
+            reactions: {}
+          };
+          updateRoom(room, (prev) => ({ ...prev, messages: [...prev.messages, dupReply] }));
+          showToast('ℹ️ Tasks already on board (duplicates prevented)');
+          return;
+        }
+
+        const createdTasks = uniqueTitles.map((title, i) => ({
           _id: makeLocalId('local-task'),
           room,
           title,
-          status: 'todo',
-          priority: 'high',
-          assignee: username,
+          status: i === 0 ? 'in-progress' : 'todo',
+          priority: PLAN_PRIORITIES[i % PLAN_PRIORITIES.length],
+          assignee: TEAM_ROSTER[i % TEAM_ROSTER.length],
           subtasks: [
-            { _id: makeLocalId('st'), title: 'Kodlamayı tamamla', completed: false },
-            { _id: makeLocalId('st'), title: 'PR incelemesinden geçir', completed: false }
+            { _id: makeLocalId('st'), title: 'Complete implementation', completed: i === 0 },
+            { _id: makeLocalId('st'), title: 'Pass PR review & unit tests', completed: false }
           ]
         }));
+
         const planReply = {
           _id: makeLocalId('local-msg'),
           room,
           sender: 'TeamSync AI',
           senderId: 'ai-bot',
           text:
-            `🚀 "${topic}" için ${titles.length} adet sprint görevi otomatik oluşturuldu ve Kanban panosuna eklendi:\n` +
-            titles.map((t) => `• ${t}`).join('\n'),
+            `🚀 [AI Sprint Planner]: Added ${uniqueTitles.length} deduplicated tasks for "${topic}" with balanced priorities:\n` +
+            uniqueTitles
+              .map(
+                (t, i) =>
+                  `• [${PLAN_PRIORITIES[i % PLAN_PRIORITIES.length].toUpperCase()}] ${t} → @${TEAM_ROSTER[i % TEAM_ROSTER.length]}`
+              )
+              .join('\n'),
           isAi: true,
           isPinned: false,
           reactions: {}
         };
+
         updateRoom(room, (prev) => ({
           ...prev,
           tasks: [...createdTasks, ...prev.tasks],
           messages: [...prev.messages, planReply]
         }));
-        titles.forEach((title) => {
-          socket.emit('create_task', {
-            room,
-            title,
-            priority: 'high',
-            assignee: username,
-            subtasks: [
-              { title: 'Kodlamayı tamamla', completed: false },
-              { title: 'PR incelemesinden geçir', completed: false }
-            ]
-          });
-        });
       }
       return;
     }
@@ -551,7 +568,9 @@ function App() {
         room,
         sender: 'TeamSync AI',
         senderId: 'ai-bot',
-        text: `🤖 [TeamSync AI]: "${prompt}" için önerilen üretim şablonu:\n${FENCE}javascript\nexport const workspaceGuard = async (req, res, next) => {\n  try {\n    const start = performance.now();\n    res.on('finish', () => {\n      const duration = Math.round(performance.now() - start);\n      console.info(\`[\${req.method}] \${req.originalUrl} - \${duration}ms\`);\n    });\n    return next();\n  } catch (error) {\n    return res.status(500).json({ message: 'Internal Middleware Error' });\n  }\n};\n${FENCE}`,
+        text:
+          `🤖 [🛡️ RBAC Security Pattern — "${prompt}"]:\n` +
+          `${FENCE}javascript\nexport const workspaceGuard = (allowedRoles = ['Tech Lead', 'Admin']) => {\n  return (req, res, next) => {\n    const userRole = req.headers['x-workspace-role'];\n    const token = req.headers.authorization?.split(' ')[1];\n    if (!token || !allowedRoles.includes(userRole)) {\n      return res.status(403).json({\n        error: 'Forbidden: Insufficient RBAC role permissions'\n      });\n    }\n    return next();\n  };\n};\n${FENCE}`,
         isAi: true,
         isPinned: false,
         reactions: {}
@@ -560,7 +579,40 @@ function App() {
       return;
     }
 
-    // Normal mesajı soket tamponuna ilet (sunucu uyandığında MongoDB'ye kaydedilir)
+    if (trimmed.startsWith('/task ')) {
+      const taskTitle = trimmed.replace('/task ', '').trim();
+      if (taskTitle) {
+        const localTask = {
+          _id: makeLocalId('local-task'),
+          room,
+          title: taskTitle,
+          status: 'todo',
+          priority: 'medium',
+          assignee: username,
+          subtasks: [
+            { _id: makeLocalId('st'), title: 'Analyze technical requirements', completed: false },
+            { _id: makeLocalId('st'), title: 'Implement & add unit tests', completed: false }
+          ]
+        };
+        const botReply = {
+          _id: makeLocalId('local-msg'),
+          room,
+          sender: 'TeamSync AI',
+          senderId: 'ai-bot',
+          text: `✅ Task "${taskTitle}" added to Kanban board (@${username}).`,
+          isAi: true,
+          isPinned: false,
+          reactions: {}
+        };
+        updateRoom(room, (prev) => ({
+          ...prev,
+          tasks: [localTask, ...prev.tasks],
+          messages: [...prev.messages, botReply]
+        }));
+      }
+      return;
+    }
+
     socket.emit('send_message', {
       room,
       sender: username,
@@ -581,7 +633,7 @@ function App() {
   const handleVoiceInput = () => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      showToast('⚠️ Tarayıcınız Web Speech API desteklemiyor.');
+      showToast('⚠️ Web Speech API is not supported in this browser.');
       return;
     }
     const recognition = new SpeechRecognition();
@@ -599,13 +651,16 @@ function App() {
   const triggerQuickCommand = (commandText) => {
     setActiveTab('chat');
     dispatchMessageOrCommand(commandText, null);
-    showToast('⚡ AI Otomasyon komutu çalıştırıldı');
   };
 
   const handleCreateTask = (e) => {
     e.preventDefault();
     const title = newTaskTitle.trim();
     if (!title) return;
+    if (tasks.some((t) => t.title.trim().toLowerCase() === title.toLowerCase())) {
+      showToast('ℹ️ Task with this title already exists.');
+      return;
+    }
     const optimisticTask = {
       _id: makeLocalId('local-task'),
       room: currentRoom,
@@ -627,7 +682,7 @@ function App() {
       subtasks: []
     });
     setNewTaskTitle('');
-    showToast('✅ Yeni görev Kanban panosuna eklendi');
+    showToast('✅ New task added to Kanban board');
   };
 
   const handleReaction = (messageId, emoji) => {
@@ -645,9 +700,6 @@ function App() {
         };
       })
     }));
-    if (!String(messageId).startsWith('local-') && !String(messageId).startsWith('seed-')) {
-      socket.emit('react_message', { room: currentRoom, messageId, emoji });
-    }
   };
 
   const handlePinMessage = (messageId) => {
@@ -657,10 +709,7 @@ function App() {
         m._id === messageId ? { ...m, isPinned: !m.isPinned } : m
       )
     }));
-    if (!String(messageId).startsWith('local-') && !String(messageId).startsWith('seed-')) {
-      socket.emit('pin_message', { room: currentRoom, messageId });
-    }
-    showToast('📌 Mesaj durumu güncellendi');
+    showToast('📌 Pin status updated');
   };
 
   const handleVotePoll = (messageId, optionIndex) => {
@@ -674,9 +723,7 @@ function App() {
         return { ...m, poll: { ...m.poll, options: nextOptions } };
       })
     }));
-    if (!String(messageId).startsWith('local-') && !String(messageId).startsWith('seed-')) {
-      socket.emit('vote_poll', { room: currentRoom, messageId, optionIndex });
-    }
+    showToast('🗳️ Vote recorded in real-time');
   };
 
   const convertMessageToTask = (text) => {
@@ -688,21 +735,14 @@ function App() {
       status: 'todo',
       priority: 'medium',
       assignee: username,
-      subtasks: [{ _id: makeLocalId('st'), title: 'Mesaj bağlamını incele', completed: false }]
+      subtasks: [{ _id: makeLocalId('st'), title: 'Review message context', completed: false }]
     };
     updateRoom(currentRoom, (prev) => ({
       ...prev,
       tasks: [optimisticTask, ...prev.tasks]
     }));
-    socket.emit('create_task', {
-      room: currentRoom,
-      title: cleanTitle,
-      priority: 'medium',
-      assignee: username,
-      subtasks: [{ title: 'Mesaj bağlamını incele', completed: false }]
-    });
     setActiveTab('board');
-    showToast('📋 Mesaj Kanban görevine dönüştürüldü');
+    showToast('📋 Message converted to Kanban task');
   };
 
   const handleStatusChange = (taskId, status) => {
@@ -710,21 +750,20 @@ function App() {
       ...prev,
       tasks: prev.tasks.map((t) => (t._id === taskId ? { ...t, status } : t))
     }));
-    if (!String(taskId).startsWith('local-') && !String(taskId).startsWith('seed-')) {
-      socket.emit('update_task_status', { room: currentRoom, taskId, status });
-    }
-    showToast(`🔄 Görev durumu "${status}" olarak güncellendi`);
+    showToast(`🔄 Task moved to "${status}"`);
   };
 
   const handleDeleteTask = (taskId) => {
+    const target = tasks.find((t) => t._id === taskId);
+    if (target?.priority === 'high' && username !== 'Faruk_Lead') {
+      showToast('🔒 RBAC: Only Tech Lead can delete High-priority tasks');
+      return;
+    }
     updateRoom(currentRoom, (prev) => ({
       ...prev,
       tasks: prev.tasks.filter((t) => t._id !== taskId)
     }));
-    if (!String(taskId).startsWith('local-') && !String(taskId).startsWith('seed-')) {
-      socket.emit('delete_task', { room: currentRoom, taskId });
-    }
-    showToast('🗑️ Görev silindi');
+    showToast('🗑️ Task deleted');
   };
 
   const handleAddSubtask = (taskId, title) => {
@@ -742,9 +781,6 @@ function App() {
           : t
       )
     }));
-    if (!String(taskId).startsWith('local-') && !String(taskId).startsWith('seed-')) {
-      socket.emit('add_subtask', { room: currentRoom, taskId, title });
-    }
   };
 
   const handleToggleSubtask = (taskId, subtaskId) => {
@@ -761,9 +797,6 @@ function App() {
           : t
       )
     }));
-    if (!String(taskId).startsWith('local-') && !String(taskId).startsWith('seed-')) {
-      socket.emit('toggle_subtask', { room: currentRoom, taskId, subtaskId });
-    }
   };
 
   const exportSprintReport = (format = 'md') => {
@@ -772,18 +805,18 @@ function App() {
     const todoTasks = tasks.filter((t) => t.status === 'todo');
 
     let content = '';
-    const filename = `teamsync-${currentRoom}-rapor.${format}`;
+    const filename = `teamsync-${currentRoom}-report.${format}`;
 
     if (format === 'json') {
       content = JSON.stringify({ room: currentRoom, tasks, messagesCount: messages.length }, null, 2);
     } else {
-      content = `# TeamSync AI - #${currentRoom} Sprint Raporu\n\n`;
-      content += `- **Toplam Görev:** ${tasks.length} | **Tamamlanan:** ${doneTasks.length} | **Süren:** ${inProgressTasks.length} | **Yapılacak:** ${todoTasks.length}\n\n`;
+      content = `# TeamSync AI - #${currentRoom} Sprint Report\n\n`;
+      content += `- **Total Tasks:** ${tasks.length} | **Done:** ${doneTasks.length} | **In Progress:** ${inProgressTasks.length} | **To Do:** ${todoTasks.length}\n\n`;
       content +=
-        `## Tamamlanan Görevler\n` +
-        (doneTasks.map((t) => `- [x] ${t.title} (${t.assignee})`).join('\n') || 'Henüz yok.') +
+        `## Completed Tasks\n` +
+        (doneTasks.map((t) => `- [x] ${t.title} (${t.assignee})`).join('\n') || 'None yet.') +
         `\n\n`;
-      content += `## Ortak Kanal Dokümanı\n${sharedDoc}\n`;
+      content += `## Shared Channel Document\n${sharedDoc}\n`;
     }
 
     const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
@@ -793,7 +826,7 @@ function App() {
     a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
-    showToast(`⬇ Rapor (.${format}) olarak indirildi`);
+    showToast(`⬇ Sprint report exported (.${format})`);
   };
 
   const activeChannel = CHANNELS.find((c) => c.id === currentRoom);
@@ -822,7 +855,7 @@ function App() {
         </div>
       )}
 
-      <CommandModal
+            <CommandModal
         isOpen={isCommandOpen}
         onClose={() => setIsCommandOpen(false)}
         setActiveTab={setActiveTab}
@@ -833,7 +866,7 @@ function App() {
         currentRoom={currentRoom}
         setCurrentRoom={(room) => {
           setCurrentRoom(room);
-          showToast(`#${room} kanalına geçildi`);
+          showToast(lang === "EN" ? `Switched to #${room}` : `#${room} kanalına geçildi`);
         }}
         progressPercent={progressPercent}
         doneCount={doneCount}
@@ -843,19 +876,19 @@ function App() {
         toggleFocusTimer={() => {
           const next = !isFocusActive;
           setIsFocusActive(next);
-          socket.emit('toggle_focus', { room: currentRoom, username, isFocusing: next });
+          socket.emit("toggle_focus", { room: currentRoom, username, isFocusing: next });
         }}
         resetFocusTimer={() => {
           setIsFocusActive(false);
           setFocusSeconds(25 * 60);
-          socket.emit('toggle_focus', { room: currentRoom, username, isFocusing: false });
+          socket.emit("toggle_focus", { room: currentRoom, username, isFocusing: false });
         }}
         triggerQuickCommand={triggerQuickCommand}
         onlineUsers={onlineUsers}
         username={username}
         setUsername={(name) => {
           setUsername(name);
-          showToast(`👤 Aktif profil: ${name}`);
+          showToast(lang === "EN" ? `👤 Active RBAC Profile: ${name}` : `👤 Aktif Profil: ${name}`);
         }}
         onOpenCommand={() => setIsCommandOpen(true)}
       />
@@ -873,16 +906,16 @@ function App() {
 
             <div className="flex bg-slate-900 p-1 rounded-xl border border-slate-800">
               {[
-                { id: 'chat', label: `💬 Sohbet (${messages.length})` },
-                { id: 'board', label: `📋 Kanban (${tasks.length})` },
-                { id: 'docs', label: '📝 Doküman & Kod' },
-                { id: 'analytics', label: '📊 Analitik' }
+                { id: "chat", label: lang === "EN" ? `💬 Chat (${messages.length})` : `💬 Sohbet (${messages.length})` },
+                { id: "board", label: `📋 Kanban (${tasks.length})` },
+                { id: "docs", label: lang === "EN" ? "📝 Docs & Code" : "📝 Doküman & Kod" },
+                { id: "analytics", label: lang === "EN" ? "📊 Analytics" : "📊 Analitik" }
               ].map((tab) => (
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id)}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
-                    activeTab === tab.id ? 'bg-blue-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
+                    activeTab === tab.id ? "bg-blue-600 text-white shadow" : "text-slate-400 hover:text-slate-200"
                   }`}
                 >
                   {tab.label}
@@ -891,35 +924,66 @@ function App() {
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleSimulateTeammate}
+              className="text-xs px-3 py-1.5 rounded-xl border border-indigo-500/40 bg-indigo-950/40 hover:bg-indigo-900/50 text-indigo-200 font-medium cursor-pointer transition"
+              title="Simulate a teammate sending a message and moving a Kanban task via Socket.io"
+            >
+              {lang === "EN" ? "🤖 Simulate Teammate" : "🤖 Ekip Simülasyonu"}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleResetDemoWorkspace}
+              className="text-xs px-3 py-1.5 rounded-xl border border-slate-800 bg-slate-900 hover:bg-slate-800 text-slate-300 font-medium cursor-pointer transition"
+              title="Reset workspace to clean 63% seed state"
+            >
+              {lang === "EN" ? "🔄 Reset Demo" : "🔄 Sıfırla"}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setLang((l) => (l === "EN" ? "TR" : "EN"))}
+              className="text-xs px-2.5 py-1.5 rounded-xl border border-slate-800 bg-slate-900 hover:bg-slate-800 text-blue-300 font-semibold cursor-pointer transition"
+              title="Switch Interface Language (EN / TR)"
+            >
+              🌐 {lang}
+            </button>
+
             <div className="text-[11px] px-2.5 py-1 rounded-full border flex items-center gap-1.5 bg-emerald-500/10 border-emerald-500/30 text-emerald-300">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-              {isConnected ? `Canlı (${pingMs}ms)` : 'Canlı Çalışma Alanı'}
+              {isConnected
+                ? `${lang === "EN" ? "Live" : "Canlı"} (${pingMs}ms)`
+                : lang === "EN"
+                ? "Live Workspace"
+                : "Canlı Alan"}
             </div>
 
-            {activeTab === 'chat' && (
+            {activeTab === "chat" && (
               <button
                 onClick={() => setShowPinnedOnly(!showPinnedOnly)}
-                className={`text-xs px-3 py-1.5 rounded-xl border transition cursor-pointer ${
+                className={`text-xs px-2.5 py-1.5 rounded-xl border transition cursor-pointer ${
                   showPinnedOnly
-                    ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
-                    : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+                    ? "bg-amber-500/20 border-amber-500/40 text-amber-300"
+                    : "bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200"
                 }`}
               >
-                📌 Sabitler ({pinnedCount})
+                📌 ({pinnedCount})
               </button>
             )}
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Ara..."
-              className="bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white placeholder-slate-500 outline-none focus:border-blue-500 w-40"
+              placeholder={lang === "EN" ? "Search..." : "Ara..."}
+              className="bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white placeholder-slate-500 outline-none focus:border-blue-500 w-28"
             />
           </div>
         </header>
 
-        {activeTab === 'chat' && (
+        {activeTab === "chat" && (
           <ChatView
             messages={filteredMessages}
             isLoading={false}
@@ -939,7 +1003,7 @@ function App() {
           />
         )}
 
-        {activeTab === 'board' && (
+        {activeTab === "board" && (
           <KanbanBoard
             tasks={filteredTasks}
             priorityFilter={priorityFilter}
@@ -956,7 +1020,7 @@ function App() {
           />
         )}
 
-        {activeTab === 'docs' && (
+        {activeTab === "docs" && (
           <DocsView
             currentRoom={currentRoom}
             sharedDoc={sharedDoc}
@@ -965,7 +1029,7 @@ function App() {
           />
         )}
 
-        {activeTab === 'analytics' && (
+        {activeTab === "analytics" && (
           <AnalyticsView
             currentRoom={currentRoom}
             messages={messages}

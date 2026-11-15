@@ -1,15 +1,15 @@
 export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5001';
 
 export const CHANNELS = [
-  { id: 'general', name: 'general', desc: 'Genel takım içi iletişim', badge: 'Ana Kanal' },
-  { id: 'development', name: 'development', desc: 'Mimari, PR ve kod tartışmaları', badge: 'Teknik' },
-  { id: 'sprint-planning', name: 'sprint-planning', desc: 'Görevler ve yol haritası', badge: 'Planlama' }
+  { id: 'general', name: 'general', desc: 'Core engineering communication & live polls', badge: 'Main' },
+  { id: 'development', name: 'development', desc: 'Architecture, PRs & RBAC middleware', badge: 'Tech' },
+  { id: 'sprint-planning', name: 'sprint-planning', desc: 'Sprint velocity & AI task breakdown', badge: 'Agile' }
 ];
 
 export const COLUMNS = [
-  { id: 'todo', title: 'Yapılacaklar', dot: 'bg-slate-400', border: 'border-slate-800' },
-  { id: 'in-progress', title: 'Sürüyor', dot: 'bg-amber-400', border: 'border-amber-500/20' },
-  { id: 'done', title: 'Tamamlandı', dot: 'bg-emerald-400', border: 'border-emerald-500/20' }
+  { id: 'todo', title: 'To Do / Yapılacak', dot: 'bg-slate-400', border: 'border-slate-800' },
+  { id: 'in-progress', title: 'In Progress / Sürüyor', dot: 'bg-amber-400', border: 'border-amber-500/20' },
+  { id: 'done', title: 'Done / Tamamlandı', dot: 'bg-emerald-400', border: 'border-emerald-500/20' }
 ];
 
 export const PRIORITY_STYLES = {
@@ -21,9 +21,15 @@ export const PRIORITY_STYLES = {
 export const QUICK_EMOJIS = ['🚀', '🔥', '👍', '❤️'];
 
 export const DEMO_PROFILES = [
-  { label: '👑 Tech Lead (Faruk)', name: 'Faruk_Lead' },
-  { label: '⚡ Frontend Dev', name: 'Ece_Frontend' },
-  { label: '🛠️ Backend Dev', name: 'Mert_Backend' }
+  { label: '👑 Tech Lead (Admin)', name: 'Faruk_Lead', role: 'Tech Lead' },
+  { label: '⚡ Frontend Dev', name: 'Ece_Frontend', role: 'Developer' },
+  { label: '🛠️ Backend Dev', name: 'Mert_Backend', role: 'Developer' }
+];
+
+export const DEFAULT_TEAM_PRESENCE = [
+  { username: 'Faruk_Lead', isFocusing: false },
+  { username: 'Ece_Frontend', isFocusing: true },
+  { username: 'Mert_Backend', isFocusing: false }
 ];
 
 const AVATAR_COLORS = [
