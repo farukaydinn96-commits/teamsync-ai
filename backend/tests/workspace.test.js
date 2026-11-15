@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {
   checkAiRateLimit,
   deduplicatePlanTasks,
-  cleanupExpiredBuckets
+  cleanupExpiredBuckets,
+  extractClientIp
 } from '../utils/rateLimiter.js';
 import {
   signDemoToken,
@@ -92,13 +93,15 @@ test('4. Duplicate prevention: deduplicatePlanTasks filters case-insensitive and
   assert.equal(unique[0], 'OAuth2 Module - Automated Integration Tests');
 });
 
-test('5. Rate Limiter: allows 5 requests/min per IP, blocks the 6th, and cleans up expired buckets', () => {
+test('5. Rate Limiter & XFF Anti-Spoofing: uses last proxy IP and blocks 6th request/min', () => {
+  const realIp = extractClientIp('1.2.3.4, 198.51.100.42', '127.0.0.1');
+  assert.equal(realIp, '198.51.100.42');
+
   const ip = `client-ip-${Date.now()}`;
   for (let i = 0; i < 5; i++) {
     assert.equal(checkAiRateLimit(ip).allowed, true);
   }
-  const sixth = checkAiRateLimit(ip);
-  assert.equal(sixth.allowed, false);
+  assert.equal(checkAiRateLimit(ip).allowed, false);
 
   cleanupExpiredBuckets(Date.now() + 61_000);
   assert.equal(checkAiRateLimit(ip).allowed, true);

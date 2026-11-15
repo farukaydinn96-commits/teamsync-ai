@@ -1,8 +1,7 @@
 import Message from '../models/Message.js';
 import Task from '../models/Task.js';
 import Document from '../models/Document.js';
-import { resetAndSeedWorkspace } from '../controllers/workspaceController.js';
-import { checkAiRateLimit, deduplicatePlanTasks } from '../utils/rateLimiter.js';
+import { checkAiRateLimit, deduplicatePlanTasks, extractClientIp } from '../utils/rateLimiter.js';
 import { signDemoToken, verifySocketAction, verifyTokenClaims } from '../middleware/workspaceGuard.js';
 import {
   roomSchema,
@@ -12,7 +11,7 @@ import {
   normalizeTaskTitle
 } from '../utils/validators.js';
 
-const FENCE = '\x60\x60\x60';
+const FENCE = '```';
 const TEAM_ROSTER = ['Faruk_Lead', 'Ece_Frontend', 'Mert_Backend', 'Zeynep_QA'];
 const PLAN_PRIORITIES = ['high', 'medium', 'medium', 'low'];
 
@@ -25,7 +24,6 @@ const withTimeout = (promise, ms = 8000) =>
 export const registerWorkspaceSockets = (io, genAI) => {
   const roomUsers = {};
 
-  // Handshake JWT validation middleware
   io.use((socket, next) => {
     const rawToken = socket.handshake.auth?.token;
     if (rawToken) {
@@ -33,10 +31,10 @@ export const registerWorkspaceSockets = (io, genAI) => {
         socket.user = verifyTokenClaims(rawToken);
         return next();
       } catch {
-        // Fallback to signed guest token for initial demo connection
+        // Fallback to signed guest token on initial handshake
       }
     }
-    const fallbackUser = String(socket.handshake.auth?.username || 'Faruk_Lead').slice(0, 40);
+    const fallbackUser = String(socket.handshake.auth?.username || 'Faruk_Lead').trim().slice(0, 40);
     const fallbackRole = fallbackUser === 'Faruk_Lead' ? 'Tech Lead' : 'Developer';
     const signed = signDemoToken({ username: fallbackUser, role: fallbackRole });
     socket.user = { username: fallbackUser, role: fallbackRole, token: signed };
@@ -44,12 +42,14 @@ export const registerWorkspaceSockets = (io, genAI) => {
   });
 
   io.on('connection', (socket) => {
-    const clientIp =
-      socket.handshake.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
-      socket.handshake.address ||
-      socket.id;
+    const clientIp = extractClientIp(
+      socket.handshake.headers['x-forwarded-for'],
+      socket.handshake.address || socket.id
+    );
 
-    socket.on('join_room', ({ room, username, isFocusing, token }) => {
+    const hasJoinedRoom = (room) => Boolean(room && socket.rooms.has(room));
+
+    socket.on('join_room', ({ room, isFocusing, token }) => {
       const validRoom = roomSchema.safeParse(room);
       if (!validRoom.success) {
         socket.emit('error_notice', { message: 'Unauthorized or invalid room identifier' });
@@ -67,39 +67,44 @@ export const registerWorkspaceSockets = (io, genAI) => {
         socket.leave(socket.currentRoom);
       }
 
+      const verifiedUsername = String(socket.user?.username || 'Faruk_Lead').slice(0, 40);
       socket.join(cleanRoom);
       socket.currentRoom = cleanRoom;
-      socket.username = String(username || socket.user?.username || 'Faruk_Lead').slice(0, 40);
+      socket.username = verifiedUsername;
 
       if (!roomUsers[cleanRoom]) roomUsers[cleanRoom] = new Map();
-      roomUsers[cleanRoom].set(socket.username, {
-        username: socket.username,
+      roomUsers[cleanRoom].set(verifiedUsername, {
+        username: verifiedUsername,
         isFocusing: Boolean(isFocusing)
       });
 
       io.to(cleanRoom).emit('room_users', Array.from(roomUsers[cleanRoom].values()));
     });
 
-    socket.on('toggle_focus', ({ room, username, isFocusing }) => {
+    socket.on('toggle_focus', ({ room, isFocusing }) => {
       const validRoom = roomSchema.safeParse(room);
-      if (!validRoom.success) return;
+      if (!validRoom.success || !hasJoinedRoom(validRoom.data)) return;
       const cleanRoom = validRoom.data;
-      if (roomUsers[cleanRoom] && roomUsers[cleanRoom].has(username)) {
-        roomUsers[cleanRoom].set(username, { username, isFocusing: Boolean(isFocusing) });
+      const verifiedUsername = socket.user?.username || socket.username;
+      if (roomUsers[cleanRoom] && verifiedUsername && roomUsers[cleanRoom].has(verifiedUsername)) {
+        roomUsers[cleanRoom].set(verifiedUsername, {
+          username: verifiedUsername,
+          isFocusing: Boolean(isFocusing)
+        });
         io.to(cleanRoom).emit('room_users', Array.from(roomUsers[cleanRoom].values()));
       }
     });
 
     socket.on('sync_doc_live', (payload) => {
       const parsed = docPayloadSchema.safeParse(payload);
-      if (!parsed.success) return;
+      if (!parsed.success || !hasJoinedRoom(parsed.data.room)) return;
       socket.to(parsed.data.room).emit('doc_updated', parsed.data.content);
     });
 
     socket.on('save_doc_db', async (payload) => {
       try {
         const parsed = docPayloadSchema.safeParse(payload);
-        if (!parsed.success) return;
+        if (!parsed.success || !hasJoinedRoom(parsed.data.room)) return;
         const doc = await Document.findOneAndUpdate(
           { room: parsed.data.room },
           { $set: { content: parsed.data.content }, $inc: { version: 1 } },
@@ -114,32 +119,19 @@ export const registerWorkspaceSockets = (io, genAI) => {
       }
     });
 
-    socket.on('reset_workspace', async ({ room }) => {
-      try {
-        await resetAndSeedWorkspace();
-        const validRoom = roomSchema.safeParse(room || 'general');
-        const targetRoom = validRoom.success ? validRoom.data : 'general';
-        const baseRoom = targetRoom.includes(':') ? targetRoom.split(':')[1] : targetRoom;
-        const [messages, tasks, doc] = await Promise.all([
-          Message.find({ room: baseRoom }).sort({ createdAt: 1 }),
-          Task.find({ room: baseRoom }).sort({ createdAt: 1 }),
-          Document.findOne({ room: baseRoom })
-        ]);
-        io.to(targetRoom).emit('workspace_reset', {
-          room: baseRoom,
-          messages,
-          tasks,
-          doc: doc?.content || ''
-        });
-      } catch (error) {
-        console.error(error.message);
-      }
-    });
-
     socket.on('send_message', async (rawPayload) => {
       try {
-        const parsed = messagePayloadSchema.safeParse(rawPayload);
-        if (!parsed.success) return;
+        if (rawPayload?.token) {
+          try {
+            socket.user = verifyTokenClaims(rawPayload.token);
+          } catch {}
+        }
+        const verifiedSender = String(socket.user?.username || 'Faruk_Lead').slice(0, 40);
+        const parsed = messagePayloadSchema.safeParse({
+          ...rawPayload,
+          sender: verifiedSender
+        });
+        if (!parsed.success || !hasJoinedRoom(parsed.data.room)) return;
         const data = parsed.data;
 
         if (data.text.startsWith('/poll ')) {
@@ -159,8 +151,8 @@ export const registerWorkspaceSockets = (io, genAI) => {
 
             const pollMsg = await Message.create({
               room: data.room,
-              sender: data.sender,
-              senderId: data.senderId,
+              sender: verifiedSender,
+              senderId: socket.id,
               text: `📊 Poll: ${question}`,
               poll: { question, options }
             });
@@ -172,8 +164,8 @@ export const registerWorkspaceSockets = (io, genAI) => {
 
         const savedMessage = await Message.create({
           room: data.room,
-          sender: data.sender,
-          senderId: data.senderId,
+          sender: verifiedSender,
+          senderId: socket.id,
           text: data.text,
           replyTo: data.replyTo || null,
           isAi: false
@@ -190,7 +182,7 @@ export const registerWorkspaceSockets = (io, genAI) => {
               normalizedTitle: normalizeTaskTitle(taskTitle),
               status: 'todo',
               priority: 'medium',
-              assignee: data.sender,
+              assignee: verifiedSender,
               subtasks: [
                 { title: 'Analyze technical requirements', completed: false },
                 { title: 'Implement & add unit tests', completed: false }
@@ -203,7 +195,7 @@ export const registerWorkspaceSockets = (io, genAI) => {
               room: data.room,
               sender: 'TeamSync AI',
               senderId: 'ai-bot',
-              text: `✅ Task "${taskTitle}" created and assigned to ${data.sender} on the Kanban board.`,
+              text: `✅ Task "${taskTitle}" created and assigned to ${verifiedSender} on the Kanban board.`,
               isAi: true
             });
 
@@ -309,9 +301,7 @@ export const registerWorkspaceSockets = (io, genAI) => {
                 });
                 insertedTitles.push(created.title);
                 io.to(data.room).emit('task_created', created);
-              } catch {
-                // Unique index caught a concurrent duplicate insert
-              }
+              } catch {}
             }
 
             if (insertedTitles.length > 0) {
@@ -352,7 +342,9 @@ export const registerWorkspaceSockets = (io, genAI) => {
           const prompt = data.text.replace('/ai ', '').trim().slice(0, 300);
           let aiReplyText =
             `🤖 [🛡️ Deterministic Fallback Template — "${prompt}"]:\n` +
-            `${FENCE}javascript\nimport jwt from 'jsonwebtoken';\n\nexport const workspaceGuard = (allowedRoles = ['Tech Lead']) => (req, res, next) => {\n  try {\n    const token = req.headers.authorization?.split(' ')[1];\n    const { username, role } = jwt.verify(token, process.env.JWT_SECRET);\n    if (!role || !allowedRoles.includes(role)) {\n      return res.status(403).json({ message: 'RBAC: Insufficient permissions' });\n    }\n    req.user = { username, role };\n    return next();\n  } catch {\n    return res.status(401).json({ message: 'Invalid or missing token' });\n  }\n};\n${FENCE}`;
+            FENCE +
+            `javascript\nimport jwt from 'jsonwebtoken';\n\nexport const workspaceGuard = (allowedRoles = ['Tech Lead']) => (req, res, next) => {\n  try {\n    const token = req.headers.authorization?.split(' ')[1];\n    const { username, role } = jwt.verify(token, process.env.JWT_SECRET);\n    if (!role || !allowedRoles.includes(role)) {\n      return res.status(403).json({ message: 'RBAC: Insufficient permissions' });\n    }\n    req.user = { username, role };\n    return next();\n  } catch {\n    return res.status(401).json({ message: 'Invalid or missing token' });\n  }\n};\n` +
+            FENCE;
 
           if (genAI) {
             try {
@@ -384,10 +376,55 @@ export const registerWorkspaceSockets = (io, genAI) => {
       }
     });
 
+    socket.on('vote_poll', async ({ room, messageId, optionIndex }) => {
+      try {
+        const validRoom = roomSchema.safeParse(room);
+        if (!validRoom.success || !hasJoinedRoom(validRoom.data)) return;
+        const idx = Number(optionIndex);
+        if (!Number.isInteger(idx) || idx < 0 || idx > 10) return;
+        const msg = await Message.findOne({ _id: String(messageId), room: validRoom.data });
+        if (!msg || !msg.poll || !msg.poll.options?.[idx]) return;
+        msg.poll.options[idx].votes += 1;
+        await msg.save();
+        io.to(validRoom.data).emit('message_updated', msg);
+      } catch {}
+    });
+
+    socket.on('react_message', async ({ room, messageId, emoji }) => {
+      try {
+        const validRoom = roomSchema.safeParse(room);
+        if (!validRoom.success || !hasJoinedRoom(validRoom.data)) return;
+        const cleanEmoji = String(emoji || '').trim().slice(0, 8);
+        if (!cleanEmoji) return;
+        const msg = await Message.findOne({ _id: String(messageId), room: validRoom.data });
+        if (!msg) return;
+        const currentCount = msg.reactions.get(cleanEmoji) || 0;
+        msg.reactions.set(cleanEmoji, currentCount + 1);
+        await msg.save();
+        io.to(validRoom.data).emit('message_updated', msg);
+      } catch {}
+    });
+
+    socket.on('pin_message', async ({ room, messageId }) => {
+      try {
+        const validRoom = roomSchema.safeParse(room);
+        if (!validRoom.success || !hasJoinedRoom(validRoom.data)) return;
+        const msg = await Message.findOne({ _id: String(messageId), room: validRoom.data });
+        if (!msg) return;
+        msg.isPinned = !msg.isPinned;
+        await msg.save();
+        io.to(validRoom.data).emit('message_updated', msg);
+      } catch {}
+    });
+
     socket.on('create_task', async (rawPayload) => {
       try {
-        const parsed = taskPayloadSchema.safeParse(rawPayload);
-        if (!parsed.success) return;
+        const verifiedAssignee = String(socket.user?.username || rawPayload?.assignee || 'Faruk_Lead').slice(0, 40);
+        const parsed = taskPayloadSchema.safeParse({
+          ...rawPayload,
+          assignee: verifiedAssignee
+        });
+        if (!parsed.success || !hasJoinedRoom(parsed.data.room)) return;
         const data = parsed.data;
 
         const newTask = await Task.create({
@@ -400,9 +437,52 @@ export const registerWorkspaceSockets = (io, genAI) => {
           subtasks: data.subtasks
         });
         io.to(data.room).emit('task_created', newTask);
-      } catch {
-        // Ignore duplicate title violation
-      }
+      } catch {}
+    });
+
+    socket.on('update_task_status', async ({ room, taskId, status }) => {
+      try {
+        const validRoom = roomSchema.safeParse(room);
+        if (!validRoom.success || !hasJoinedRoom(validRoom.data)) return;
+        if (!['todo', 'in-progress', 'done'].includes(status)) return;
+        const updatedTask = await Task.findOneAndUpdate(
+          { _id: String(taskId), room: validRoom.data },
+          { status },
+          { new: true }
+        );
+        if (updatedTask) {
+          io.to(validRoom.data).emit('task_updated', updatedTask);
+        }
+      } catch {}
+    });
+
+    socket.on('add_subtask', async ({ room, taskId, title }) => {
+      try {
+        const validRoom = roomSchema.safeParse(room);
+        if (!validRoom.success || !hasJoinedRoom(validRoom.data)) return;
+        const cleanTitle = String(title || '').trim().slice(0, 120);
+        if (!cleanTitle) return;
+        const task = await Task.findOne({ _id: String(taskId), room: validRoom.data });
+        if (!task) return;
+        task.subtasks.push({ title: cleanTitle, completed: false });
+        await task.save();
+        io.to(validRoom.data).emit('task_updated', task);
+      } catch {}
+    });
+
+    socket.on('toggle_subtask', async ({ room, taskId, subtaskId }) => {
+      try {
+        const validRoom = roomSchema.safeParse(room);
+        if (!validRoom.success || !hasJoinedRoom(validRoom.data)) return;
+        const task = await Task.findOne({ _id: String(taskId), room: validRoom.data });
+        if (!task) return;
+        const sub = task.subtasks.id(String(subtaskId));
+        if (sub) {
+          sub.completed = !sub.completed;
+          await task.save();
+          io.to(validRoom.data).emit('task_updated', task);
+        }
+      } catch {}
     });
 
     socket.on('delete_task', async (data) => {
@@ -413,12 +493,10 @@ export const registerWorkspaceSockets = (io, genAI) => {
         );
         if (!jwtAuth.allowed) return;
         const validRoom = roomSchema.safeParse(data?.room);
-        if (!validRoom.success) return;
-        await Task.findByIdAndDelete(String(data.taskId));
+        if (!validRoom.success || !hasJoinedRoom(validRoom.data)) return;
+        await Task.findOneAndDelete({ _id: String(data.taskId), room: validRoom.data });
         io.to(validRoom.data).emit('task_deleted', data.taskId);
-      } catch (error) {
-        console.error(error.message);
-      }
+      } catch {}
     });
 
     socket.on('disconnect', () => {

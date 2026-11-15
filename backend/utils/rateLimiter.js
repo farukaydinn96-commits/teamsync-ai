@@ -5,6 +5,19 @@ let currentDay = new Date().toISOString().slice(0, 10);
 export const MAX_AI_PER_MINUTE = 5;
 export const MAX_AI_PER_DAY = 120;
 
+export const extractClientIp = (forwardedHeader, fallbackAddress = 'anonymous') => {
+  if (typeof forwardedHeader === 'string' && forwardedHeader.trim().length > 0) {
+    const parts = forwardedHeader
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (parts.length > 0) {
+      return parts[parts.length - 1];
+    }
+  }
+  return fallbackAddress || 'anonymous';
+};
+
 export const cleanupExpiredBuckets = (now = Date.now()) => {
   const windowStart = now - 60_000;
   for (const [key, timestamps] of clientBuckets.entries()) {
@@ -17,7 +30,6 @@ export const cleanupExpiredBuckets = (now = Date.now()) => {
   }
 };
 
-// Periodic cleanup every 60s to prevent memory leaks in long-running processes
 const cleanupTimer = setInterval(() => cleanupExpiredBuckets(), 60_000);
 if (typeof cleanupTimer.unref === 'function') {
   cleanupTimer.unref();

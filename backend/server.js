@@ -1,9 +1,9 @@
+import 'dotenv/config';
 import express from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import helmet from 'helmet';
-import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import workspaceRoutes from './routes/workspaceRoutes.js';
@@ -11,17 +11,14 @@ import { seedInitialData } from './controllers/workspaceController.js';
 import { registerWorkspaceSockets } from './sockets/workspaceSocket.js';
 import { notFoundHandler, errorHandler, logEvent } from './middleware/errorHandler.js';
 
-dotenv.config();
-
 const app = express();
 const server = http.createServer(app);
 
-// Required behind Render reverse proxy so req.ip & rate limiting track real visitor IPs
 app.set('trust proxy', 1);
 
 const allowedOrigins = [
   process.env.CLIENT_URL,
-  '[https://teamsync-workspace-three.vercel.app](https://teamsync-workspace-three.vercel.app)',
+  'https://teamsync-workspace-three.vercel.app',
   'http://localhost:5173',
   'http://localhost:4173'
 ].filter(Boolean);

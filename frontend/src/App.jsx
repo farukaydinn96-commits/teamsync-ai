@@ -247,14 +247,34 @@ function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  useEffect(() => {
+    useEffect(() => {
     socket.emit('join_room', {
       room: scopedRoom,
       username,
       isFocusing: isFocusActive,
       token: jwtToken
     });
-  }, [scopedRoom, username, isFocusActive, jwtToken]);
+
+    let active = true;
+    Promise.all([
+      fetch(`${BACKEND_URL}/api/messages/${encodeURIComponent(scopedRoom)}`).then((r) => (r.ok ? r.json() : [])),
+      fetch(`${BACKEND_URL}/api/tasks/${encodeURIComponent(scopedRoom)}`).then((r) => (r.ok ? r.json() : [])),
+      fetch(`${BACKEND_URL}/api/docs/${encodeURIComponent(scopedRoom)}`).then((r) => (r.ok ? r.json() : null))
+    ])
+      .then(([dbMsgs, dbTasks, dbDoc]) => {
+        if (!active) return;
+        updateRoom(currentRoom, (prev) => ({
+          messages: Array.isArray(dbMsgs) && dbMsgs.length > 0 ? dbMsgs : prev.messages,
+          tasks: Array.isArray(dbTasks) && dbTasks.length > 0 ? dbTasks : prev.tasks,
+          doc: dbDoc?.content && dbDoc.content.trim().length > 0 ? dbDoc.content : prev.doc
+        }));
+      })
+      .catch(() => {});
+
+    return () => {
+      active = false;
+    };
+  }, [scopedRoom, currentRoom, username, isFocusActive, jwtToken]);
 
   useEffect(() => {
     const handleReceiveMessage = (serverMsg) => {
@@ -706,6 +726,9 @@ function App() {
         };
       })
     }));
+    if (!String(messageId).startsWith('local-') && !String(messageId).startsWith('seed-')) {
+      socket.emit('react_message', { room: scopedRoom, messageId, emoji });
+    }
   };
 
   const handlePinMessage = (messageId) => {
@@ -715,6 +738,9 @@ function App() {
         m._id === messageId ? { ...m, isPinned: !m.isPinned } : m
       )
     }));
+    if (!String(messageId).startsWith('local-') && !String(messageId).startsWith('seed-')) {
+      socket.emit('pin_message', { room: scopedRoom, messageId });
+    }
     showToast('📌 Pin status updated');
   };
 
@@ -729,7 +755,10 @@ function App() {
         return { ...m, poll: { ...m.poll, options: nextOptions } };
       })
     }));
-    showToast('🗳️ Vote recorded in real-time');
+    if (!String(messageId).startsWith('local-') && !String(messageId).startsWith('seed-')) {
+      socket.emit('vote_poll', { room: scopedRoom, messageId, optionIndex });
+    }
+    showToast('🗳️ Vote recorded');
   };
 
   const convertMessageToTask = (text) => {
@@ -756,6 +785,9 @@ function App() {
       ...prev,
       tasks: prev.tasks.map((tItem) => (tItem._id === taskId ? { ...tItem, status } : tItem))
     }));
+    if (!String(taskId).startsWith('local-') && !String(taskId).startsWith('seed-')) {
+      socket.emit('update_task_status', { room: scopedRoom, taskId, status });
+    }
     showToast(`🔄 Task moved to "${status}"`);
   };
 
@@ -788,6 +820,9 @@ function App() {
           : tItem
       )
     }));
+    if (!String(taskId).startsWith('local-') && !String(taskId).startsWith('seed-')) {
+      socket.emit('add_subtask', { room: scopedRoom, taskId, title });
+    }
   };
 
   const handleToggleSubtask = (taskId, subtaskId) => {
@@ -804,6 +839,9 @@ function App() {
           : tItem
       )
     }));
+    if (!String(taskId).startsWith('local-') && !String(taskId).startsWith('seed-')) {
+      socket.emit('toggle_subtask', { room: scopedRoom, taskId, subtaskId });
+    }
   };
 
   const exportSprintReport = (format = 'md') => {

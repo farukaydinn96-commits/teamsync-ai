@@ -21,4 +21,7 @@ const documentSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// 24-hour TTL index matching Message and Task schemas for isolated session cleanup
+documentSchema.index({ updatedAt: 1 }, { expireAfterSeconds: 86400 });
+
 export default mongoose.model('Document', documentSchema);

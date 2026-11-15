@@ -1,9 +1,18 @@
 import jwt from 'jsonwebtoken';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'teamsync_jwt_secret_2026_key';
+export const getJwtSecret = () => {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('CRITICAL: JWT_SECRET environment variable must be set in production');
+    }
+    return 'dev_only_local_jwt_secret_teamsync';
+  }
+  return secret;
+};
 
 export const signDemoToken = ({ username, role }) => {
-  return jwt.sign({ username, role }, JWT_SECRET, { expiresIn: '4h' });
+  return jwt.sign({ username, role }, getJwtSecret(), { expiresIn: '4h' });
 };
 
 export const verifyTokenClaims = (token) => {
@@ -13,7 +22,7 @@ export const verifyTokenClaims = (token) => {
     throw err;
   }
   try {
-    return jwt.verify(token, JWT_SECRET);
+    return jwt.verify(token, getJwtSecret());
   } catch {
     const err = new Error('Invalid or missing token');
     err.statusCode = 401;
