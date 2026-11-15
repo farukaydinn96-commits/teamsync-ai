@@ -8,7 +8,7 @@ import KanbanBoard from './components/KanbanBoard';
 import { DocsView, AnalyticsView } from './components/DocsAndAnalytics';
 import CommandModal from './components/CommandModal';
 
-const CACHE_KEY = 'teamsync_workspace_cache_v5';
+const CACHE_KEY = 'teamsync_workspace_cache_v6';
 const FENCE = '\x60\x60\x60';
 const TEAM_ROSTER = ['Faruk_Lead', 'Mert_Backend', 'Ece_Frontend', 'Zeynep_QA'];
 const PLAN_PRIORITIES = ['high', 'medium', 'medium', 'low'];
@@ -637,7 +637,7 @@ function App() {
       return;
     }
     const recognition = new SpeechRecognition();
-    recognition.lang = 'tr-TR';
+    recognition.lang = 'en-US';
     recognition.onstart = () => setIsListening(true);
     recognition.onend = () => setIsListening(false);
     recognition.onerror = () => setIsListening(false);

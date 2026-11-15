@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
 import { QUICK_EMOJIS, getAvatarGradient, getInitials } from '../constants/workspaceConfig';
 
+const FENCE = '\x60\x60\x60';
+
 export default function ChatView({
   messages,
   isLoading,
@@ -26,11 +28,11 @@ export default function ChatView({
   }, [messages]);
 
   const renderMessageContent = (text, msgId) => {
-    if (!text.includes('```')) {
+    if (!text.includes(FENCE)) {
       return <span className="whitespace-pre-wrap">{text}</span>;
     }
 
-    const parts = text.split('```');
+    const parts = text.split(FENCE);
     return parts.map((part, index) => {
       if (index % 2 === 1) {
         const cleanCode = part.replace(/^[a-z]+\n/i, '').trim();
@@ -38,18 +40,18 @@ export default function ChatView({
         return (
           <div key={index} className="my-2 bg-slate-950 border border-slate-800 rounded-xl overflow-hidden text-xs font-mono">
             <div className="bg-slate-900 px-3 py-1.5 border-b border-slate-800 flex items-center justify-between text-slate-400">
-              <span>Kod Bloğu</span>
+              <span>Code Snippet</span>
               <button
                 type="button"
                 onClick={() => {
                   navigator.clipboard.writeText(cleanCode);
                   setCopiedId(copyKey);
-                  showToast('📋 Kod panoya kopyalandı');
+                  showToast('📋 Code copied to clipboard');
                   setTimeout(() => setCopiedId(null), 1500);
                 }}
                 className="text-[11px] bg-slate-800 hover:bg-slate-700 text-slate-200 px-2 py-0.5 rounded cursor-pointer"
               >
-                {copiedId === copyKey ? '✓ Kopyalandı' : 'Kopyala'}
+                {copiedId === copyKey ? '✓ Copied' : 'Copy'}
               </button>
             </div>
             <pre className="p-3 overflow-x-auto text-emerald-300">{cleanCode}</pre>
@@ -98,14 +100,14 @@ export default function ChatView({
                   <div className="flex items-center gap-2 mb-1 px-1">
                     {msg.isAi && (
                       <span className="text-[10px] bg-purple-500/20 border border-purple-500/30 text-purple-300 px-1.5 py-0.5 rounded font-semibold">
-                        AI ASİSTAN
+                        AI ASSISTANT
                       </span>
                     )}
                     <span className={`text-xs font-medium ${msg.isAi ? 'text-purple-400' : 'text-slate-400'}`}>
                       {msg.sender}
                     </span>
                     {msg.isPinned && (
-                      <span className="text-[10px] text-amber-400 font-medium">📌 Sabitlendi</span>
+                      <span className="text-[10px] text-amber-400 font-medium">📌 Pinned</span>
                     )}
                   </div>
 
@@ -141,7 +143,7 @@ export default function ChatView({
                             >
                               <div className="flex justify-between text-xs mb-1">
                                 <span>{opt.text}</span>
-                                <span className="text-slate-400">{opt.votes} oy (%{pct})</span>
+                                <span className="text-slate-400">{opt.votes} votes ({pct}%)</span>
                               </div>
                               <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
                                 <div className="h-full bg-blue-500 transition-all duration-300" style={{ width: `${pct}%` }} />
@@ -169,19 +171,19 @@ export default function ChatView({
                           onClick={() => setReplyingTo(msg)}
                           className="text-slate-300 hover:text-white cursor-pointer"
                         >
-                          ↩ Yanıtla
+                          ↩ Reply
                         </button>
                         <button
                           onClick={() => handlePinMessage(msg._id)}
                           className="text-slate-300 hover:text-amber-300 cursor-pointer"
                         >
-                          {msg.isPinned ? 'Sabiti Kaldır' : '📌 Sabitle'}
+                          {msg.isPinned ? 'Unpin' : '📌 Pin'}
                         </button>
                         <button
                           onClick={() => convertMessageToTask(msg.text)}
                           className="text-slate-300 hover:text-emerald-300 cursor-pointer"
                         >
-                          + Görev Yap
+                          + Convert to Task
                         </button>
                       </div>
                     </div>
@@ -214,7 +216,7 @@ export default function ChatView({
           {replyingTo && (
             <div className="flex items-center justify-between bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-xl text-xs">
               <span className="text-slate-300 truncate">
-                ↩ <strong>{replyingTo.sender}</strong> kişisine yanıt veriliyor: "{replyingTo.text}"
+                ↩ Replying to <strong>{replyingTo.sender}</strong>: "{replyingTo.text}"
               </span>
               <button
                 type="button"
@@ -234,7 +236,7 @@ export default function ChatView({
                   ? 'bg-rose-600 border-rose-500 text-white animate-pulse'
                   : 'bg-slate-900 border-slate-800 text-slate-300 hover:bg-slate-800'
               }`}
-              title="Sesle Yazdır"
+              title="Voice Input"
             >
               🎙️
             </button>
@@ -242,14 +244,14 @@ export default function ChatView({
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Mesaj yaz veya /ai, /task, /plan [konu], /poll Soru | Şık1 | Şık2 kullan..."
+              placeholder="Type a message or use /ai, /task, /plan [topic], /poll Question | Opt1 | Opt2..."
               className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-500 outline-none focus:border-blue-500 transition"
             />
             <button
               type="submit"
               className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-3 rounded-xl font-medium text-sm transition cursor-pointer shadow-lg shadow-blue-600/20"
             >
-              Gönder
+              Send
             </button>
           </div>
         </div>

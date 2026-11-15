@@ -7,9 +7,9 @@ export const CHANNELS = [
 ];
 
 export const COLUMNS = [
-  { id: 'todo', title: 'To Do / Yapılacak', dot: 'bg-slate-400', border: 'border-slate-800' },
-  { id: 'in-progress', title: 'In Progress / Sürüyor', dot: 'bg-amber-400', border: 'border-amber-500/20' },
-  { id: 'done', title: 'Done / Tamamlandı', dot: 'bg-emerald-400', border: 'border-emerald-500/20' }
+  { id: 'todo', title: 'To Do', dot: 'bg-slate-400', border: 'border-slate-800' },
+  { id: 'in-progress', title: 'In Progress', dot: 'bg-amber-400', border: 'border-amber-500/20' },
+  { id: 'done', title: 'Done', dot: 'bg-emerald-400', border: 'border-emerald-500/20' }
 ];
 
 export const PRIORITY_STYLES = {

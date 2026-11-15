@@ -56,7 +56,7 @@ export default function KanbanBoard({
             type="text"
             value={newTaskTitle}
             onChange={(e) => setNewTaskTitle(e.target.value)}
-            placeholder="Yeni görev başlığı yazın..."
+            placeholder="Enter new task title..."
             className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2 text-sm text-white placeholder-slate-500 outline-none focus:border-blue-500"
           />
           <select
@@ -64,15 +64,15 @@ export default function KanbanBoard({
             onChange={(e) => setNewTaskPriority(e.target.value)}
             className="bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-sm text-slate-200 outline-none"
           >
-            <option value="low">Düşük Öncelik</option>
-            <option value="medium">Orta Öncelik</option>
-            <option value="high">Yüksek Öncelik</option>
+            <option value="low">Low Priority</option>
+            <option value="medium">Medium Priority</option>
+            <option value="high">High Priority</option>
           </select>
           <button
             type="submit"
             className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl text-sm font-medium transition cursor-pointer"
           >
-            + Görev Ekle
+            + Add Task
           </button>
         </form>
 
@@ -85,7 +85,7 @@ export default function KanbanBoard({
                 priorityFilter === prio ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'
               }`}
             >
-              {prio === 'all' ? 'Tümü' : prio}
+              {prio === 'all' ? 'All' : prio}
             </button>
           ))}
         </div>
@@ -139,15 +139,15 @@ export default function KanbanBoard({
                           onClick={() => handleDeleteTask(task._id)}
                           className="text-slate-500 hover:text-rose-400 text-xs opacity-0 group-hover:opacity-100 transition cursor-pointer"
                         >
-                          Sil
+                          Delete
                         </button>
                       </div>
                       <p className="text-sm font-medium text-slate-100 mb-3 leading-snug">{task.title}</p>
 
                       <div className="mb-3 space-y-1.5 bg-slate-950/60 p-2.5 rounded-lg border border-slate-800/70">
                         <div className="flex justify-between text-[10px] text-slate-400 mb-1">
-                          <span>Alt Görevler</span>
-                          <span>{doneSubs}/{subs.length} (%{subPct})</span>
+                          <span>Subtasks</span>
+                          <span>{doneSubs}/{subs.length} ({subPct}%)</span>
                         </div>
                         {subs.length > 0 && (
                           <div className="w-full h-1 bg-slate-800 rounded-full overflow-hidden mb-1.5">
@@ -177,7 +177,7 @@ export default function KanbanBoard({
                             onChange={(e) =>
                               setSubtaskInputs((prev) => ({ ...prev, [task._id]: e.target.value }))
                             }
-                            placeholder="+ Alt adım ekle..."
+                            placeholder="+ Add subtask..."
                             className="flex-1 bg-slate-900 border border-slate-800 rounded px-2 py-1 text-[11px] text-white outline-none focus:border-blue-500"
                           />
                         </form>
@@ -195,9 +195,9 @@ export default function KanbanBoard({
                           onChange={(e) => handleStatusChange(task._id, e.target.value)}
                           className="bg-slate-950 text-slate-300 rounded-lg px-2 py-1 text-[11px] outline-none border border-slate-800"
                         >
-                          <option value="todo">Yapılacak</option>
-                          <option value="in-progress">Sürüyor</option>
-                          <option value="done">Tamamlandı</option>
+                          <option value="todo">To Do</option>
+                          <option value="in-progress">In Progress</option>
+                          <option value="done">Done</option>
                         </select>
                       </div>
                     </div>

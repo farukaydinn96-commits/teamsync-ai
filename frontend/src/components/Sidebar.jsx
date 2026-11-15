@@ -58,7 +58,7 @@ export default function Sidebar({
           <button
             onClick={onOpenCommand}
             className="text-xs bg-slate-900 hover:bg-slate-800 text-slate-400 border border-slate-800 px-2 py-1 rounded-lg cursor-pointer transition"
-            title="Command Palette"
+            title="Command Palette (⌘K)"
           >
             ⌘K
           </button>
@@ -66,8 +66,8 @@ export default function Sidebar({
 
         <div className="p-3.5 border-b border-slate-800/60">
           <div className="flex items-center justify-between text-xs mb-1.5">
-            <span className="text-slate-400 font-medium">Sprint Progress / İlerleme</span>
-            <span className="text-emerald-400 font-semibold">%{progressPercent}</span>
+            <span className="text-slate-400 font-medium">Sprint Progress</span>
+            <span className="text-emerald-400 font-semibold">{progressPercent}%</span>
           </div>
           <div className="w-full h-2 bg-slate-900 rounded-full overflow-hidden border border-slate-800">
             <div
@@ -76,8 +76,8 @@ export default function Sidebar({
             />
           </div>
           <div className="flex justify-between text-[11px] text-slate-500 mt-1">
-            <span>{doneCount} Done / Bitti</span>
-            <span>{totalTasks} Tasks / Görev</span>
+            <span>{doneCount} Completed</span>
+            <span>{totalTasks} Total Tasks</span>
           </div>
         </div>
 
@@ -99,7 +99,7 @@ export default function Sidebar({
                   : 'bg-slate-800 hover:bg-slate-700 text-slate-200'
               }`}
             >
-              {isFocusActive ? 'Pause / Duraklat' : 'Focus / Odaklan'}
+              {isFocusActive ? 'Pause Session' : 'Start Focus'}
             </button>
             <button
               onClick={resetFocusTimer}
@@ -112,7 +112,7 @@ export default function Sidebar({
 
         <div className="p-3">
           <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider px-2 mb-1.5">
-            Channels / Kanallar
+            Workspace Channels
           </p>
           <div className="space-y-1">
             {CHANNELS.map((channel) => (
@@ -148,7 +148,7 @@ export default function Sidebar({
               onClick={() => triggerQuickCommand('/plan OAuth2 & RBAC Microservice Module')}
               className="w-full text-left text-xs bg-emerald-950/30 hover:bg-emerald-950/60 text-emerald-300 border border-emerald-500/20 px-3 py-2 rounded-xl transition cursor-pointer flex items-center justify-between"
             >
-              <span>🚀 AI Sprint Plan (/plan)</span>
+              <span>🚀 AI Sprint Planner (/plan)</span>
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-200">Lead Only</span>
             </button>
             <button
@@ -161,7 +161,7 @@ export default function Sidebar({
               onClick={() => triggerQuickCommand('/ai Write an Express RBAC workspaceGuard middleware.')}
               className="w-full text-left text-xs bg-purple-950/30 hover:bg-purple-950/60 text-purple-300 border border-purple-500/20 px-3 py-2 rounded-xl transition cursor-pointer"
             >
-              💻 Ask AI for RBAC Guard (/ai)
+              💻 Generate RBAC Guard (/ai)
             </button>
           </div>
         </div>
@@ -169,7 +169,7 @@ export default function Sidebar({
 
       <div className="p-3 border-t border-slate-800/80 bg-slate-900/30 space-y-2.5">
         <div>
-          <p className="text-[11px] text-slate-500 mb-1">Active Team / Aktif Takım ({activeTeamList.length} Online)</p>
+          <p className="text-[11px] text-slate-500 mb-1">Active Team ({activeTeamList.length} Online)</p>
           <div className="flex flex-wrap gap-1.5">
             {activeTeamList.map((u, i) => {
               const name = u.username;
@@ -187,9 +187,9 @@ export default function Sidebar({
 
         <div>
           <div className="flex items-center justify-between mb-1">
-            <label className="text-[11px] text-slate-400">RBAC Role Switcher (Recruiter Demo)</label>
+            <label className="text-[11px] text-slate-400">RBAC Role Switcher (Demo)</label>
             <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${isTechLead ? 'bg-blue-500/20 text-blue-300' : 'bg-slate-800 text-slate-400'}`}>
-              {isTechLead ? '👑 Admin/Lead' : '🛠️ Member'}
+              {isTechLead ? '👑 Admin/Lead' : '🛠️ Developer'}
             </span>
           </div>
           <div className="flex gap-1 mb-2">
