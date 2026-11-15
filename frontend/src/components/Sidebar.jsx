@@ -1,6 +1,8 @@
 import { CHANNELS, DEMO_PROFILES, DEFAULT_TEAM_PRESENCE } from '../constants/workspaceConfig';
+import { TRANSLATIONS } from '../constants/i18n';
 
 export default function Sidebar({
+  lang = 'EN',
   currentRoom,
   setCurrentRoom,
   progressPercent,
@@ -16,6 +18,8 @@ export default function Sidebar({
   setUsername,
   onOpenCommand
 }) {
+  const t = TRANSLATIONS[lang] || TRANSLATIONS.EN;
+
   const formatTimer = (totalSec) => {
     const m = String(Math.floor(totalSec / 60)).padStart(2, '0');
     const s = String(totalSec % 60).padStart(2, '0');
@@ -26,19 +30,19 @@ export default function Sidebar({
 
   const mergedPresence = () => {
     const map = new Map();
-    DEFAULT_TEAM_PRESENCE.forEach((u) => map.set(u.username, u));
+    DEFAULT_TEAM_PRESENCE.forEach((u) => map.set(u.username, { ...u, isSim: u.username !== 'Faruk_Lead' }));
     (onlineUsers || []).forEach((u) => {
       const name = typeof u === 'string' ? u : u.username;
       if (name) map.set(name, typeof u === 'object' ? u : { username: name, isFocusing: false });
     });
-    map.set(username, { username, isFocusing: isFocusActive });
+    map.set(username, { username, isFocusing: isFocusActive, isSim: false });
     return Array.from(map.values());
   };
 
   const activeTeamList = mergedPresence();
 
   return (
-    <aside className="w-72 bg-slate-950 border-r border-slate-800/80 flex flex-col justify-between overflow-y-auto">
+    <aside className="w-72 shrink-0 bg-slate-950 border-r border-slate-800/80 flex flex-col justify-between overflow-y-auto">
       <div>
         <div className="p-4 border-b border-slate-800/80 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
@@ -66,7 +70,7 @@ export default function Sidebar({
 
         <div className="p-3.5 border-b border-slate-800/60">
           <div className="flex items-center justify-between text-xs mb-1.5">
-            <span className="text-slate-400 font-medium">Sprint Progress</span>
+            <span className="text-slate-400 font-medium">{t.sprintProgress}</span>
             <span className="text-emerald-400 font-semibold">{progressPercent}%</span>
           </div>
           <div className="w-full h-2 bg-slate-900 rounded-full overflow-hidden border border-slate-800">
@@ -76,15 +80,15 @@ export default function Sidebar({
             />
           </div>
           <div className="flex justify-between text-[11px] text-slate-500 mt-1">
-            <span>{doneCount} Completed</span>
-            <span>{totalTasks} Total Tasks</span>
+            <span>{doneCount} {t.completed}</span>
+            <span>{totalTasks} {t.totalTasks}</span>
           </div>
         </div>
 
         <div className="p-3 border-b border-slate-800/60 bg-slate-900/20">
           <div className="flex items-center justify-between mb-2">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-              🎯 Deep Work Timer
+              🎯 {t.deepWorkTimer}
             </span>
             <span className={`text-xs font-mono font-bold px-2 py-0.5 rounded ${isFocusActive ? 'bg-amber-500/20 text-amber-300' : 'bg-slate-900 text-slate-300'}`}>
               {formatTimer(focusSeconds)}
@@ -99,20 +103,20 @@ export default function Sidebar({
                   : 'bg-slate-800 hover:bg-slate-700 text-slate-200'
               }`}
             >
-              {isFocusActive ? 'Pause Session' : 'Start Focus'}
+              {isFocusActive ? t.pauseSession : t.startFocus}
             </button>
             <button
               onClick={resetFocusTimer}
               className="px-2.5 py-1.5 text-xs bg-slate-900 hover:bg-slate-800 text-slate-400 rounded-lg border border-slate-800 cursor-pointer"
             >
-              Reset
+              {t.reset}
             </button>
           </div>
         </div>
 
         <div className="p-3">
           <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider px-2 mb-1.5">
-            Workspace Channels
+            {t.workspaceChannels}
           </p>
           <div className="space-y-1">
             {CHANNELS.map((channel) => (
@@ -141,27 +145,27 @@ export default function Sidebar({
 
         <div className="p-3">
           <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider px-2 mb-1.5">
-            ⚡ AI Automation (Rate-Limited)
+            ⚡ {t.aiAutomation}
           </p>
           <div className="space-y-1.5">
             <button
               onClick={() => triggerQuickCommand('/plan OAuth2 & RBAC Microservice Module')}
               className="w-full text-left text-xs bg-emerald-950/30 hover:bg-emerald-950/60 text-emerald-300 border border-emerald-500/20 px-3 py-2 rounded-xl transition cursor-pointer flex items-center justify-between"
             >
-              <span>🚀 AI Sprint Planner (/plan)</span>
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-200">Lead Only</span>
+              <span>🚀 {t.aiSprintPlan}</span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-200">{t.leadOnly}</span>
             </button>
             <button
               onClick={() => triggerQuickCommand('/poll Primary Database? | MongoDB Atlas | PostgreSQL | Redis')}
               className="w-full text-left text-xs bg-amber-950/30 hover:bg-amber-950/60 text-amber-300 border border-amber-500/20 px-3 py-2 rounded-xl transition cursor-pointer"
             >
-              📊 Start Live Poll (/poll)
+              📊 {t.startLivePoll}
             </button>
             <button
-              onClick={() => triggerQuickCommand('/ai Write an Express RBAC workspaceGuard middleware.')}
+              onClick={() => triggerQuickCommand('/ai Write an Express JWT RBAC workspaceGuard middleware.')}
               className="w-full text-left text-xs bg-purple-950/30 hover:bg-purple-950/60 text-purple-300 border border-purple-500/20 px-3 py-2 rounded-xl transition cursor-pointer"
             >
-              💻 Generate RBAC Guard (/ai)
+              💻 {t.generateRbacGuard}
             </button>
           </div>
         </div>
@@ -169,15 +173,19 @@ export default function Sidebar({
 
       <div className="p-3 border-t border-slate-800/80 bg-slate-900/30 space-y-2.5">
         <div>
-          <p className="text-[11px] text-slate-500 mb-1">Active Team ({activeTeamList.length} Online)</p>
+          <p className="text-[11px] text-slate-500 mb-1">
+            {t.activeTeam} ({activeTeamList.length} {t.online})
+          </p>
           <div className="flex flex-wrap gap-1.5">
             {activeTeamList.map((u, i) => {
               const name = u.username;
               const focusing = u.isFocusing;
+              const isSim = name !== username && (name === 'Ece_Frontend' || name === 'Mert_Backend');
               return (
                 <span key={i} className="text-[11px] bg-slate-900 border border-slate-800 text-slate-300 px-2 py-0.5 rounded-full flex items-center gap-1">
                   <span className={`w-1.5 h-1.5 rounded-full ${focusing ? 'bg-amber-400' : 'bg-emerald-400'}`}></span>
                   {name}
+                  {isSim && <span className="text-[9px] text-slate-500">(Sim)</span>}
                   {focusing && <span title="Deep Work Mode">🎯</span>}
                 </span>
               );
@@ -187,9 +195,9 @@ export default function Sidebar({
 
         <div>
           <div className="flex items-center justify-between mb-1">
-            <label className="text-[11px] text-slate-400">RBAC Role Switcher (Demo)</label>
+            <label className="text-[11px] text-slate-400">{t.rbacRoleSwitcher}</label>
             <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${isTechLead ? 'bg-blue-500/20 text-blue-300' : 'bg-slate-800 text-slate-400'}`}>
-              {isTechLead ? '👑 Admin/Lead' : '🛠️ Developer'}
+              {isTechLead ? t.adminLead : t.developer}
             </span>
           </div>
           <div className="flex gap-1 mb-2">
@@ -206,16 +214,6 @@ export default function Sidebar({
                 {prof.label}
               </button>
             ))}
-          </div>
-
-          <div className="flex items-center gap-2 bg-slate-900 px-3 py-1.5 rounded-xl border border-slate-800 focus-within:border-blue-500">
-            <span className="text-xs">👤</span>
-            <input
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              className="bg-transparent text-xs text-white outline-none w-full font-medium"
-            />
           </div>
         </div>
       </div>
